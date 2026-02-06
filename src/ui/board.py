@@ -24,6 +24,7 @@ class ChessBoard(QGraphicsView):
         self.drag_item = None
         self.flipped = False
         self.engine_move = None
+        self.hover_move = None
         
         self.square_size = 100
         self.color_light = "#eeeed2"
@@ -36,6 +37,10 @@ class ChessBoard(QGraphicsView):
 
     def set_engine_move(self, uci):
         self.engine_move = uci
+        self.update_board()
+
+    def set_hover_move(self, uci):
+        self.hover_move = uci
         self.update_board()
 
     def resizeEvent(self, event):
@@ -201,7 +206,7 @@ class ChessBoard(QGraphicsView):
                 import math
                 from PySide6.QtGui import QPainterPath
                 
-                color = QColor(0, 180, 0, 80) # Más transparente y suave
+                color = QColor(0, 180, 0, 45) # Más transparente
                 
                 dx = end.x() - start.x()
                 dy = end.y() - start.y()
@@ -210,10 +215,10 @@ class ChessBoard(QGraphicsView):
                 
                 angle = math.atan2(dy, dx)
                 
-                # Definir dimensiones de la flecha
-                shaft_width = self.square_size * 0.12
-                head_width = self.square_size * 0.35
-                head_length = self.square_size * 0.4
+                # Definir dimensiones de la flecha (Aún más anchas)
+                shaft_width = self.square_size * 0.25
+                head_width = self.square_size * 0.55
+                head_length = self.square_size * 0.55
                 
                 # Punto donde termina el cuerpo y empieza la cabeza
                 shaft_end_dist = dist - head_length
@@ -248,4 +253,38 @@ class ChessBoard(QGraphicsView):
                 path.closeSubpath()
 
                 self.scene.addPath(path, Qt.NoPen, QBrush(color))
+            except: pass
+
+        # 5. Dibujar Flecha de Hover (Azul)
+        if self.hover_move:
+            try:
+                m = chess.Move.from_uci(self.hover_move)
+                c1, r1 = self.get_square_coords(m.from_square)
+                c2, r2 = self.get_square_coords(m.to_square)
+                start = QPointF((c1 + 0.5) * self.square_size, (r1 + 0.5) * self.square_size)
+                end = QPointF((c2 + 0.5) * self.square_size, (r2 + 0.5) * self.square_size)
+                import math
+                from PySide6.QtGui import QPainterPath
+                color = QColor(0, 100, 255, 55) # Más transparente
+                dx, dy = end.x() - start.x(), end.y() - start.y()
+                dist = math.sqrt(dx*dx + dy*dy)
+                if dist > 10:
+                    angle = math.atan2(dy, dx)
+                    # Dimensiones más anchas
+                    sw, hw, hl = self.square_size * 0.25, self.square_size * 0.55, self.square_size * 0.55
+                    sed = dist - hl
+                    path = QPainterPath()
+                    def get_pt_h(d, w):
+                        px = d * math.cos(angle) - w * math.sin(angle)
+                        py = d * math.sin(angle) + w * math.cos(angle)
+                        return start + QPointF(px, py)
+                    path.moveTo(get_pt_h(0, -sw/2))
+                    path.lineTo(get_pt_h(sed, -sw/2))
+                    path.lineTo(get_pt_h(sed, -hw/2))
+                    path.lineTo(end)
+                    path.lineTo(get_pt_h(sed, hw/2))
+                    path.lineTo(get_pt_h(sed, sw/2))
+                    path.lineTo(get_pt_h(0, sw/2))
+                    path.closeSubpath()
+                    self.scene.addPath(path, Qt.NoPen, QBrush(color))
             except: pass
