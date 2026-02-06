@@ -58,7 +58,6 @@ class MainWindow(QMainWindow):
 
     def flip_boards(self):
         self.board_ana.flip()
-        self.board_lab.flip()
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -136,48 +135,6 @@ class MainWindow(QMainWindow):
         self.db_table.itemDoubleClicked.connect(self.load_game_from_list)
         self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
         db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
-
-        # --- TAB 3: LABORATORIO ---
-        self.tab_lab = QWidget()
-        self.tabs.addTab(self.tab_lab, "Laboratorio")
-        lab_layout = QHBoxLayout(self.tab_lab); lab_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Contenedor para Tablero + Toolbar
-        lab_board_container = QWidget()
-        lab_board_container_layout = QVBoxLayout(lab_board_container)
-        lab_board_container_layout.setContentsMargins(0,0,0,0)
-        lab_board_container_layout.setSpacing(0)
-        
-        self.toolbar_lab = QToolBar()
-        self.toolbar_lab.setMovable(False)
-        self.setup_toolbar(self.toolbar_lab)
-        lab_board_container_layout.addWidget(self.toolbar_lab)
-        
-        self.board_lab = ChessBoard(self.board, self)
-        self.board_lab.color_light = self.def_light
-        self.board_lab.color_dark = self.def_dark
-        lab_board_container_layout.addWidget(self.board_lab)
-        lab_layout.addWidget(lab_board_container)
-        
-        panel_lab = QWidget(); p_lab_layout = QVBoxLayout(panel_lab)
-        
-        self.label_apertura_lab = QLabel("<b>Apertura:</b> Inicial")
-        p_lab_layout.addWidget(self.label_apertura_lab)
-        
-        self.tree_lab = self.create_scid_table(["Movim.", "Frec.", "Win %", "Tablas", "AvElo", "Perf", "Masc."])
-        self.tree_lab.setFont(table_font)
-        self.tree_lab.cellClicked.connect(self.on_tree_cell_click)
-        p_lab_layout.addWidget(self.tree_lab)
-        
-        p_lab_layout.addWidget(QLabel("<b>Gestión de Máscaras</b>"))
-        self.mask_list = QListWidget(); p_lab_layout.addWidget(self.mask_list)
-        mask_btns = QHBoxLayout()
-        btn_new = QPushButton("Nueva"); btn_new.clicked.connect(self.create_mask)
-        btn_fill = QPushButton("Cargar en Máscara"); btn_fill.clicked.connect(self.fill_mask_from_db)
-        btn_del = QPushButton("Borrar"); btn_del.clicked.connect(self.delete_mask)
-        mask_btns.addWidget(btn_new); mask_btns.addWidget(btn_fill); mask_btns.addWidget(btn_del)
-        p_lab_layout.addLayout(mask_btns)
-        lab_layout.addWidget(panel_lab, 1)
 
         # Cargar DBs que quedaron pendientes del config
         for path in getattr(self, 'pending_dbs', []):
@@ -372,15 +329,14 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.board_ana.color_light, self.board_ana.color_dark, self)
         if dialog.exec_():
             light, dark = dialog.get_colors()
-            self.board_ana.color_light = self.board_lab.color_light = light
-            self.board_ana.color_dark = self.board_lab.color_dark = dark
+            self.board_ana.color_light = light
+            self.board_ana.color_dark = dark
             self.board_ana.update_board()
-            self.board_lab.update_board()
             self.save_config()
 
     def resizeEvent(self, event):
         h = self.centralWidget().height() - 40
-        self.board_ana.setFixedWidth(h); self.board_lab.setFixedWidth(h)
+        self.board_ana.setFixedWidth(h)
         super().resizeEvent(event)
 
     def init_clipbase(self):
@@ -499,7 +455,7 @@ class MainWindow(QMainWindow):
         while self.current_idx < idx: self.step_forward()
 
     def update_ui(self):
-        self.board_ana.update_board(); self.board_lab.update_board(); self.update_stats()
+        self.board_ana.update_board(); self.update_stats()
         temp = chess.Board(); html = "<style>a { text-decoration: none; color: #222; } .active { background-color: #f6f669; }</style>"
         for i, m in enumerate(self.full_mainline[:len(self.full_mainline)]):
             san_move = temp.san(m); num = (i//2)+1
@@ -513,34 +469,9 @@ class MainWindow(QMainWindow):
         it = table.item(row, 0); uci = it.data(Qt.UserRole)
         if uci: self.make_move(chess.Move.from_uci(uci))
 
-    def create_mask(self):
-        color = QColorDialog.getColor(Qt.blue, self, "Color")
-        if color.isValid():
-            name = f"Máscara {len(self.masks)+1}"
-            self.masks[name] = {"positions": set(), "color": color}
-            it = QListWidgetItem(name); it.setBackground(color); it.setForeground(Qt.white); self.mask_list.addItem(it)
-
-    def fill_mask_from_db(self):
-        curr = self.mask_list.currentItem()
-        df = self.dbs.get(self.active_db_name)
-        if curr and df is not None:
-            self.progress.setVisible(True); self.mask_worker = MaskWorker(df)
-            self.mask_worker.progress.connect(self.progress.setValue); self.mask_worker.finished.connect(lambda p: self.on_mask_filled(curr.text(), p)); self.mask_worker.start()
-
-    def on_mask_filled(self, name, positions):
-        self.masks[name]["positions"] = positions; self.progress.setVisible(False); self.update_stats()
-
-    def delete_mask(self):
-        curr = self.mask_list.currentItem()
-        if curr:
-            name = curr.text()
-            if name in self.masks: del self.masks[name]
-            self.mask_list.takeItem(self.mask_list.row(curr)); self.update_stats()
-
     def save_config(self):
         dbs_info = [{"path": m["path"]} for m in self.db_metadata.values() if m.get("path")]
         # Usar colores actuales de los tableros si existen, si no los por defecto
-        light = getattr(self, 'board_ana', None)
         colors = {
             "light": self.board_ana.color_light if hasattr(self, 'board_ana') else "#eeeed2",
             "dark": self.board_ana.color_dark if hasattr(self, 'board_ana') else "#8ca2ad"
@@ -573,12 +504,10 @@ class MainWindow(QMainWindow):
         # --- Obtener Nombre Humano de Apertura (ECO) ---
         ap_nombre = self.eco.get_opening_name(line_uci)
         self.label_apertura.setText(f"<b>Apertura:</b> {ap_nombre}")
-        self.label_apertura_lab.setText(f"<b>Apertura:</b> {ap_nombre}")
 
         df = self.dbs.get(self.active_db_name)
         if df is None:
             self.tree_ana.setRowCount(0)
-            self.tree_lab.setRowCount(0)
             return
 
         try:
@@ -598,29 +527,24 @@ class MainWindow(QMainWindow):
 
             is_white = self.board.turn == chess.WHITE
 
-            for table in [self.tree_ana, self.tree_lab]:
-                table.setRowCount(res.height)
-                for i, r in enumerate(res.rows(named=True)):
-                    mv = chess.Move.from_uci(r["uci"]); san = self.board.san(mv)
-                    it_move = QTableWidgetItem(san); it_move.setData(Qt.UserRole, r["uci"])
-                    table.setItem(i, 0, it_move)
-                    
-                    count = r["c"]; w, b, d = r["w"], r["b"], r["d"]
-                    if is_white:
-                        score = (w + 0.5 * d) / count
-                        perf = int(r["avg_b_elo"] + (score - 0.5) * 800)
-                    else:
-                        score = (b + 0.5 * d) / count
-                        perf = int(r["avg_w_elo"] + (score - 0.5) * 800)
+            table = self.tree_ana
+            table.setRowCount(res.height)
+            for i, r in enumerate(res.rows(named=True)):
+                mv = chess.Move.from_uci(r["uci"]); san = self.board.san(mv)
+                it_move = QTableWidgetItem(san); it_move.setData(Qt.UserRole, r["uci"])
+                table.setItem(i, 0, it_move)
+                
+                count = r["c"]; w, b, d = r["w"], r["b"], r["d"]
+                if is_white:
+                    score = (w + 0.5 * d) / count
+                    perf = int(r["avg_b_elo"] + (score - 0.5) * 800)
+                else:
+                    score = (b + 0.5 * d) / count
+                    perf = int(r["avg_w_elo"] + (score - 0.5) * 800)
 
-                    cols = [str(count), f"{(w/count)*100:.1f}%", f"{(d/count)*100:.1f}%", str(int(r["avg_w_elo" if is_white else "avg_b_elo"])), str(perf)]
-                    for col_idx, text in enumerate(cols, start=1):
-                        it = QTableWidgetItem(text); it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter); table.setItem(i, col_idx, it)
+                cols = [str(count), f"{(w/count)*100:.1f}%", f"{(d/count)*100:.1f}%", str(int(r["avg_w_elo" if is_white else "avg_b_elo"])), str(perf)]
+                for col_idx, text in enumerate(cols, start=1):
+                    it = QTableWidgetItem(text); it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter); table.setItem(i, col_idx, it)
 
-                    if table == self.tree_lab:
-                        self.board.push(mv); epd = self.board.epd(); mask_str = ""
-                        for m_n, m_i in self.masks.items():
-                            if epd in m_i["positions"]: mask_str += "● "; it_move.setForeground(m_i["color"])
-                        self.board.pop(); table.setItem(i, 6, QTableWidgetItem(mask_str))
-                table.resizeColumnsToContents()
+            table.resizeColumnsToContents()
         except: pass
