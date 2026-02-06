@@ -468,8 +468,18 @@ class MainWindow(QMainWindow):
         self.current_idx = 0; self.tabs.setCurrentIndex(0); self.update_ui()
 
     def make_move(self, move):
-        if self.current_idx < len(self.full_mainline): self.full_mainline = self.full_mainline[:self.current_idx]
-        self.board.push(move); self.full_mainline.append(move); self.current_idx += 1; self.update_ui()
+        if self.current_idx < len(self.full_mainline):
+            if self.full_mainline[self.current_idx] == move:
+                # Si es la misma jugada, solo avanzamos
+                self.step_forward()
+                return
+            # Si es una jugada diferente, cortamos la línea
+            self.full_mainline = self.full_mainline[:self.current_idx]
+        
+        self.board.push(move)
+        self.full_mainline.append(move)
+        self.current_idx += 1
+        self.update_ui()
 
     def step_back(self):
         if self.current_idx > 0: self.current_idx -= 1; self.board.pop(); self.update_ui()
