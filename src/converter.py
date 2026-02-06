@@ -13,6 +13,39 @@ def count_games(pgn_path):
                 count += 1
     return count
 
+def extract_game_data(count, game):
+    """Lógica unificada para extraer datos de un objeto chess.pgn.Game"""
+    headers = game.headers
+    board = game.board()
+    fens = [board.epd()]
+    uci_moves = []
+    
+    for move in game.mainline_moves():
+        uci_moves.append(move.uci())
+        board.push(move)
+        fens.append(board.epd())
+    
+    def safe_int(val):
+        if not val: return 0
+        try:
+            clean_val = "".join(filter(str.isdigit, str(val)))
+            return int(clean_val) if clean_val else 0
+        except: return 0
+
+    return {
+        "id": count,
+        "white": headers.get("White", "Unknown"),
+        "black": headers.get("Black", "Unknown"),
+        "w_elo": safe_int(headers.get("WhiteElo")),
+        "b_elo": safe_int(headers.get("BlackElo")),
+        "result": headers.get("Result", "*"),
+        "date": headers.get("Date", "????.??.??"),
+        "event": headers.get("Event", "?"),
+        "line": " ".join(uci_moves[:12]),
+        "full_line": " ".join(uci_moves),
+        "fens": " ".join(fens)
+    }
+
 def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
     """
     Convierte un PGN a Parquet con total estático.
@@ -47,26 +80,7 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
                 if game is None:
                     break
                 
-                headers = game.headers
-                moves = []
-                node = game
-                for _ in range(12):
-                    if not node.variations: break
-                    node = node.variation(0)
-                    moves.append(node.move.uci())
-                
-                games_data.append({
-                    "id": count,
-                    "white": headers.get("White", "Unknown"),
-                    "black": headers.get("Black", "Unknown"),
-                    "w_elo": int(headers.get("WhiteElo", "0") if headers.get("WhiteElo", "0").isdigit() else 0),
-                    "b_elo": int(headers.get("BlackElo", "0") if headers.get("BlackElo", "0").isdigit() else 0),
-                    "result": headers.get("Result", "*"),
-                    "date": headers.get("Date", "????.??.??"),
-                    "event": headers.get("Event", "?"),
-                    "line": " ".join(moves),
-                    "full_line": " ".join([m.uci() for m in game.mainline_moves()])
-                })
+                games_data.append(extract_game_data(count, game))
                 
                 count += 1
                 if count % 200 == 0:

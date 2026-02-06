@@ -3,6 +3,7 @@ import chess
 import chess.pgn
 import polars as pl
 from PySide6.QtCore import QThread, Signal
+from converter import extract_game_data
 
 class PGNWorker(QThread):
     progress = Signal(int)
@@ -23,26 +24,7 @@ class PGNWorker(QThread):
                     game = chess.pgn.read_game(pgn)
                     if not game: break
                     
-                    def safe_int(val):
-                        if not val: return 0
-                        try:
-                            clean_val = "".join(filter(str.isdigit, str(val)))
-                            return int(clean_val) if clean_val else 0
-                        except: return 0
-
-                    full_line = [node.move.uci() for node in game.mainline()]
-                    games.append({
-                        "id": count,
-                        "white": game.headers.get("White", "?"),
-                        "black": game.headers.get("Black", "?"),
-                        "w_elo": safe_int(game.headers.get("WhiteElo")),
-                        "b_elo": safe_int(game.headers.get("BlackElo")),
-                        "result": game.headers.get("Result", "*"),
-                        "date": game.headers.get("Date", "????.??.??"),
-                        "event": game.headers.get("Event", "?"),
-                        "line": " ".join(full_line[:12]),
-                        "full_line": " ".join(full_line)
-                    })
+                    games.append(extract_game_data(count, game))
                     count += 1
                     if count % 1000 == 0:
                         self.progress.emit(int((pgn.tell() / file_size) * 100))
@@ -53,6 +35,22 @@ class PGNWorker(QThread):
             self.finished.emit(out)
         except Exception as e:
             self.status.emit(f"Error: {e}")
+
+class StatsWorker(QThread):
+    finished = Signal(object) # Envía el DataFrame resultante
+
+    def __init__(self, db_manager, line_uci, is_white):
+        super().__init__()
+        self.db_manager = db_manager
+        self.line_uci = line_uci
+        self.is_white = is_white
+
+    def run(self):
+        try:
+            res = self.db_manager.get_stats_for_position(self.line_uci, self.is_white)
+            self.finished.emit(res)
+        except:
+            self.finished.emit(None)
 
 class MaskWorker(QThread):
     progress = Signal(int)

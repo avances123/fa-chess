@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QCo
 import qtawesome as qta
 
 from config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
-from core.workers import PGNWorker
+from core.workers import PGNWorker, StatsWorker
 from core.eco import ECOManager
 from core.db_manager import DBManager
 from ui.board import ChessBoard
@@ -22,6 +22,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.search_dialog import SearchDialog
 from ui.edit_game_dialog import EditGameDialog
 from core.engine_worker import EngineWorker
+from PySide6.QtCore import Qt, QPointF, QTimer
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -32,6 +33,11 @@ class MainWindow(QMainWindow):
         self.board = chess.Board()
         self.full_mainline = []
         self.current_idx = 0
+        
+        # Temporizador para debouncing de estadísticas (evita lag)
+        self.stats_timer = QTimer()
+        self.stats_timer.setSingleShot(True)
+        self.stats_timer.timeout.connect(self.run_stats_worker)
         
         self.db = DBManager()
         self.eco = ECOManager(ECO_FILE)
@@ -49,9 +55,36 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_End), self, self.go_end)
         QShortcut(QKeySequence("F"), self, self.flip_boards)
         QShortcut(QKeySequence("E"), self, self.toggle_engine_shortcut)
+        QShortcut(QKeySequence("S"), self, self.search_current_position)
 
     def flip_boards(self):
         self.board_ana.flip()
+
+    def search_current_position(self):
+        # Feature 4: Buscar la posición actual (EPD) en la base de datos
+        epd = self.board.epd()
+        
+        # Verificar si la base actual soporta búsqueda por posición
+        df = self.db.get_active_df()
+        if df is None:
+            self.statusBar().showMessage("No hay ninguna base de datos activa", 3000)
+            return
+
+        if "fens" not in df.columns:
+            # Depuración: imprimir columnas detectadas
+            print(f"DEBUG: Columnas en base activa '{self.db.active_db_name}': {df.columns}")
+            QMessageBox.warning(self, "Búsqueda por Posición", 
+                f"La base '{self.db.active_db_name}' no tiene el índice de posiciones.\n\n"
+                "Por favor, vuelve a abrir el archivo PGN original para re-importarla.")
+            return
+
+        self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "position_epd": epd}
+        filtered = self.db.filter_db(self.db.active_db_name, self.search_criteria)
+        if filtered is not None:
+            self.tabs.setCurrentIndex(1) # Cambiar a la pestaña de Gestor para ver resultados
+            self.label_db_stats.setText(f"[{filtered.height}/{self.db.get_active_df().height}]")
+            self.refresh_db_list(filtered)
+            self.statusBar().showMessage(f"Búsqueda por posición: {filtered.height} partidas encontradas", 3000)
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -151,6 +184,14 @@ class MainWindow(QMainWindow):
 
     def setup_toolbar(self, toolbar):
         toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly); left_spacer = QWidget(); left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(left_spacer)
+        # Botón para Búsqueda por Posición
+        self.action_search_pos = QAction(qta.icon('fa5s.crosshairs'), "", self)
+        self.action_search_pos.setToolTip("Buscar partidas con esta posición (S)")
+        self.action_search_pos.triggered.connect(self.search_current_position)
+        toolbar.addAction(self.action_search_pos)
+        
+        toolbar.addSeparator()
+
         actions = [(qta.icon('fa5s.step-backward'), self.go_start, "Inicio (Home)"), (qta.icon('fa5s.chevron-left'), self.step_back, "Anterior (Izquierda)"), (qta.icon('fa5s.chevron-right'), self.step_forward, "Siguiente (Derecha)"), (qta.icon('fa5s.step-forward'), self.go_end, "Final (End)"), (None, None, None), (qta.icon('fa5s.retweet'), self.flip_boards, "Girar Tablero (F)")]
         for icon, func, tip in actions:
             if icon is None: toolbar.addSeparator()
@@ -328,9 +369,28 @@ class MainWindow(QMainWindow):
             except: pass
 
     def update_stats(self):
-        moves = self.board.move_stack; line_uci = " ".join([m.uci() for m in moves]); self.label_apertura.setText(f"<b>Apertura:</b> {self.eco.get_opening_name(line_uci)}"); res = self.db.get_stats_for_position(line_uci, self.board.turn == chess.WHITE)
+        moves = self.board.move_stack; line_uci = " ".join([m.uci() for m in moves])
+        self.label_apertura.setText(f"<b>Apertura:</b> {self.eco.get_opening_name(line_uci)}")
+        
+        # En lugar de buscar directamente, lanzamos el temporizador (debouncing)
+        # Esto recupera los FPS al arrastrar piezas
+        self.stats_timer.start(150) # Esperar 150ms de calma antes de buscar
+
+    def run_stats_worker(self):
+        moves = self.board.move_stack; line_uci = " ".join([m.uci() for m in moves])
+        
+        if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
+            self.stats_worker.terminate()
+            self.stats_worker.wait()
+            
+        self.stats_worker = StatsWorker(self.db, line_uci, self.board.turn == chess.WHITE)
+        self.stats_worker.finished.connect(self.on_stats_finished)
+        self.stats_worker.start()
+
+    def on_stats_finished(self, res):
         if res is None: self.tree_ana.setRowCount(0); return
         table = self.tree_ana; table.setSortingEnabled(False); table.setRowCount(res.height); is_white = self.board.turn == chess.WHITE
         for i, r in enumerate(res.rows(named=True)):
             mv = chess.Move.from_uci(r["uci"]); san = self.board.san(mv); it_move = QTableWidgetItem(san); it_move.setData(Qt.UserRole, r["uci"]); table.setItem(i, 0, it_move); it_count = QTableWidgetItem(); it_count.setData(Qt.DisplayRole, r["c"]); table.setItem(i, 1, it_count); table.setCellWidget(i, 2, self.ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white)); win_rate = ((r["w"] + 0.5 * r["d"]) / r["c"] if is_white else (r["b"] + 0.5 * r["d"]) / r["c"]) * 100; it_win = QTableWidgetItem(f"{win_rate:.1f}%"); it_win.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter); table.setItem(i, 3, it_win); score = (r["w"] + 0.5 * r["d"]) / r["c"] if is_white else (r["b"] + 0.5 * r["d"]) / r["c"]; perf = int(r["avg_b_elo" if is_white else "avg_w_elo"] + (score - 0.5) * 800); it_elo = QTableWidgetItem(); it_elo.setData(Qt.DisplayRole, int(r["avg_w_elo" if is_white else "avg_b_elo"])); table.setItem(i, 4, it_elo); it_perf = QTableWidgetItem(); it_perf.setData(Qt.DisplayRole, perf); table.setItem(i, 5, it_perf)
         table.setSortingEnabled(True); table.resizeColumnsToContents()
+

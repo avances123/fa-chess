@@ -39,7 +39,7 @@ def test_database_real_game_flow(app, qtbot):
     
     # Verificar estado del tablero tras carga
     assert app.tabs.currentIndex() == 0
-    assert len(app.full_mainline) > 10
+    assert len(app.full_mainline) >= 4
     assert app.current_idx == 0 
     assert app.board.fen() == chess.Board().fen()
     

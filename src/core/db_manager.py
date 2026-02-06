@@ -60,6 +60,16 @@ class DBManager:
         if criteria.get("black"):
             q = q.filter(pl.col("black").str.contains(criteria["black"]))
         
+        # Búsqueda por posición (Feature 4)
+        if criteria.get("position_epd"):
+            if "fens" in df.columns:
+                # Buscamos el EPD actual dentro de la lista de FENs de la partida
+                q = q.filter(pl.col("fens").str.contains(criteria["position_epd"]))
+            else:
+                # Si la base es antigua y no tiene FENs, no podemos filtrar por posición
+                # Podríamos lanzar una excepción capturable o simplemente ignorar el filtro
+                pass
+
         min_elo = criteria.get("min_elo")
         if min_elo and str(min_elo).isdigit():
             m = int(min_elo)
