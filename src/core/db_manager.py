@@ -6,6 +6,10 @@ from datetime import datetime
 from config import CONFIG_FILE
 from PySide6.QtCore import QObject, Signal
 
+# Rutas del Proyecto
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLIPBASE_FILE = os.path.expanduser("~/.config/fa-chess-clipbase.parquet")
+
 class DBManager(QObject):
     # Señales para que la UI reaccione a cambios en los datos
     database_loaded = Signal(str)  # nombre de la base
@@ -22,14 +26,60 @@ class DBManager(QObject):
         self.init_clipbase()
 
     def init_clipbase(self):
-        self.dbs["Clipbase"] = pl.DataFrame(schema={
+        schema = {
             "id": pl.Int64, "white": pl.String, "black": pl.String, 
             "w_elo": pl.Int64, "b_elo": pl.Int64, "result": pl.String, 
             "date": pl.String, "event": pl.String, "line": pl.String, 
             "full_line": pl.String, "fens": pl.List(pl.UInt64)
-        })
-        self.db_metadata["Clipbase"] = {"read_only": False, "path": None}
+        }
+        
+        if os.path.exists(CLIPBASE_FILE):
+            try:
+                self.dbs["Clipbase"] = pl.read_parquet(CLIPBASE_FILE)
+            except:
+                self.dbs["Clipbase"] = pl.DataFrame(schema=schema)
+        else:
+            self.dbs["Clipbase"] = pl.DataFrame(schema=schema)
+            
+        self.db_metadata["Clipbase"] = {"read_only": False, "path": CLIPBASE_FILE}
         self.current_filter_df = None
+
+    def save_clipbase(self):
+        """Guardar la Clipbase actual en disco para persistencia"""
+        if "Clipbase" in self.dbs:
+            self.dbs["Clipbase"].write_parquet(CLIPBASE_FILE)
+
+    def create_new_database(self, path):
+        """Crea un archivo Parquet vacío con el esquema correcto"""
+        schema = {
+            "id": pl.Int64, "white": pl.String, "black": pl.String, 
+            "w_elo": pl.Int64, "b_elo": pl.Int64, "result": pl.String, 
+            "date": pl.String, "event": pl.String, "line": pl.String, 
+            "full_line": pl.String, "fens": pl.List(pl.UInt64)
+        }
+        df = pl.DataFrame(schema=schema)
+        df.write_parquet(path)
+        return self.load_parquet(path)
+
+    def delete_database_from_disk(self, name):
+        """Elimina el archivo físico de la base de datos"""
+        if name == "Clipbase": return False
+        
+        path = self.db_metadata.get(name, {}).get("path")
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                return self.remove_database(name)
+            except Exception as e:
+                print(f"Error al borrar archivo: {e}")
+                return False
+        return False
+
+    def set_readonly(self, name, status):
+        if name in self.db_metadata and name != "Clipbase":
+            self.db_metadata[name]["read_only"] = status
+            return True
+        return False
 
     def load_parquet(self, path):
         name = os.path.basename(path)
@@ -104,7 +154,8 @@ class DBManager(QObject):
 
     def get_active_df(self): return self.dbs.get(self.active_db_name)
     def add_to_clipbase(self, game_data): 
-        self.dbs["Clipbase"] = pl.concat([self.dbs["Clipbase"], pl.DataFrame([game_data])])
+        schema = self.dbs["Clipbase"].schema
+        self.dbs["Clipbase"] = pl.concat([self.dbs["Clipbase"], pl.DataFrame([game_data], schema=schema)])
         if self.active_db_name == "Clipbase": self.current_filter_df = None
     def delete_game(self, db_name, game_id):
         if db_name in self.dbs: 

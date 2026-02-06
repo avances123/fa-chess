@@ -7,7 +7,7 @@ import polars as pl
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTableWidget, QTableWidgetItem, QLabel, QPushButton, 
                              QFileDialog, QProgressBar, QHeaderView, QTextBrowser, 
-                             QStatusBar, QTabWidget, QListWidget, QMenu, 
+                             QStatusBar, QTabWidget, QListWidget, QListWidgetItem, QMenu, 
                              QColorDialog, QMenuBar, QAbstractItemView, QToolBar, 
                              QStyle, QSizePolicy, QMessageBox)
 from PySide6.QtCore import Qt, QPointF, QTimer
@@ -119,13 +119,51 @@ class MainWindow(QMainWindow):
         ana_layout.addWidget(panel_ana, 1)
 
         # --- TAB 2: GESTOR ---
-        self.tab_db = QWidget(); self.tabs.addTab(self.tab_db, "Gestor Bases"); db_layout = QHBoxLayout(self.tab_db); db_sidebar = QVBoxLayout()
-        self.db_list_widget = QListWidget(); self.db_list_widget.addItem("Clipbase"); self.db_list_widget.setContextMenuPolicy(Qt.CustomContextMenu); self.db_list_widget.currentRowChanged.connect(self.switch_db); self.db_list_widget.customContextMenuRequested.connect(self.on_db_list_context_menu)
-        self.progress = QProgressBar(); self.progress.setVisible(False); db_sidebar.addWidget(self.db_list_widget); self.btn_search = QPushButton("🔍 Filtrar Partidas"); self.btn_search.clicked.connect(self.open_search); db_sidebar.addWidget(self.btn_search)
-        self.btn_clear_filter = QPushButton("🧹 Quitar Filtros"); self.btn_clear_filter.clicked.connect(lambda: self.db.set_active_db(self.db.active_db_name))
-        db_sidebar.addWidget(self.btn_clear_filter)
-        self.label_db_stats = QLabel("[0/0]"); self.label_db_stats.setAlignment(Qt.AlignCenter); db_sidebar.addWidget(self.label_db_stats); db_sidebar.addWidget(self.progress); db_layout.addLayout(db_sidebar, 1)
+        self.tab_db = QWidget(); self.tabs.addTab(self.tab_db, "Gestor Bases")
+        db_layout = QHBoxLayout(self.tab_db)
+        
+        # Sidebar de Bases
+        db_sidebar = QVBoxLayout()
+        db_sidebar.setContentsMargins(5, 5, 5, 5)
+        
+        db_sidebar.addWidget(QLabel("<b>Partidas Filtradas</b>"))
+        
+        # Indicador de estadísticas encima de Bases Abiertas
+        self.label_db_stats = QLabel("[0/0]")
+        self.label_db_stats.setAlignment(Qt.AlignCenter)
+        self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
+        db_sidebar.addWidget(self.label_db_stats)
+
+        # Lista de Bases
+        db_sidebar.addWidget(QLabel("<b>Bases Abiertas</b>"))
+        self.db_list_widget = QListWidget()
+        from PySide6.QtCore import QSize
+        self.db_list_widget.setIconSize(QSize(14, 14)) # Iconos más pequeños y elegantes
+        
+        # Inicializar Clipbase con icono de portapapeles
+        clip_item = QListWidgetItem(qta.icon('fa5s.clipboard', color='#2e7d32'), "Clipbase")
+        self.db_list_widget.addItem(clip_item)
+        
+        self.db_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.db_list_widget.currentRowChanged.connect(self.switch_db)
+        self.db_list_widget.customContextMenuRequested.connect(self.on_db_list_context_menu)
+        db_sidebar.addWidget(self.db_list_widget)
+        
+        # Panel de Acciones (Agrupado abajo)
+        actions_group = QWidget(); actions_layout = QVBoxLayout(actions_group); actions_layout.setContentsMargins(0, 5, 0, 5)
+        
+        self.btn_search = QPushButton(qta.icon('fa5s.search'), " Filtrar Partidas"); self.btn_search.clicked.connect(self.open_search); actions_layout.addWidget(self.btn_search)
+        self.btn_clear_filter = QPushButton(qta.icon('fa5s.eraser'), " Quitar Filtros"); self.btn_clear_filter.clicked.connect(lambda: self.db.set_active_db(self.db.active_db_name)); actions_layout.addWidget(self.btn_clear_filter)
+        self.btn_save_active = QPushButton(qta.icon('fa5s.save'), " Guardar en Base"); self.btn_save_active.setToolTip("Guardar partida actual en la base activa"); self.btn_save_active.clicked.connect(self.save_to_active_db); actions_layout.addWidget(self.btn_save_active)
+        
+        db_sidebar.addWidget(actions_group)
+        
+        self.progress = QProgressBar(); self.progress.setVisible(False); self.progress.setFixedHeight(8); db_sidebar.addWidget(self.progress)
+        db_layout.addLayout(db_sidebar, 1)
+        
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
+        
+        # Contenido de la Tabla
         db_content = QVBoxLayout(); self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"]); self.db_table.setFont(table_font); self.db_table.itemDoubleClicked.connect(self.load_game_from_list); self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu); db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
         for path in getattr(self, 'pending_dbs', []):
             if os.path.exists(path): self.load_parquet(path)
@@ -147,6 +185,9 @@ class MainWindow(QMainWindow):
         except: pass
 
     def closeEvent(self, event):
+        # Guardar Clipbase al cerrar
+        self.db.save_clipbase()
+        
         if hasattr(self, 'engine_worker'): self.engine_worker.stop(); self.engine_worker.wait()
         super().closeEvent(event)
 
@@ -217,15 +258,99 @@ class MainWindow(QMainWindow):
             game_id = self.db_table.item(row, 0).data(Qt.UserRole)
             if self.db.delete_game(self.db.active_db_name, game_id): self.db.set_active_db(self.db.active_db_name); self.statusBar().showMessage("Partida eliminada", 2000)
 
+    def copy_selected_game(self):
+        row = self.db_table.currentRow()
+        if row < 0: return
+        
+        game_id = self.db_table.item(row, 0).data(Qt.UserRole)
+        game_data = self.db.get_game_by_id(self.db.active_db_name, game_id)
+        if not game_data: return
+
+        # Buscar bases que NO son de solo lectura
+        writable_dbs = []
+        for name, meta in self.db.db_metadata.items():
+            if not meta.get("read_only", True) or name == "Clipbase":
+                writable_dbs.append(name)
+
+        if not writable_dbs:
+            QMessageBox.warning(self, "Copiar Partida", "No hay bases de datos con permiso de escritura abiertas.")
+            return
+
+        # Diálogo para elegir destino
+        from PySide6.QtWidgets import QInputDialog
+        target_db, ok = QInputDialog.getItem(self, "Copiar Partida", 
+                                           "Selecciona la base de datos destino:", 
+                                           writable_dbs, 0, False)
+        
+        if ok and target_db:
+            game_data["id"] = int(time.time() * 1000) # Nuevo ID único
+            schema = self.db.dbs[target_db].schema
+            # Asegurar consistencia de columnas
+            clean_data = {k: game_data[k] for k in schema.keys()}
+            
+            if target_db == "Clipbase":
+                self.db.add_to_clipbase(clean_data)
+            else:
+                self.db.dbs[target_db] = pl.concat([self.db.dbs[target_db], pl.DataFrame([clean_data], schema=schema)])
+            
+            self.statusBar().showMessage(f"Partida copiada a '{target_db}'", 3000)
+            if self.db.active_db_name == target_db:
+                self.db.set_active_db(target_db) # Refresca si estamos viéndola
+
     def on_db_table_context_menu(self, pos):
-        menu = QMenu(); copy_action = QAction("📋 Copiar a Clipbase", self); copy_action.triggered.connect(self.copy_to_clipbase); menu.addAction(copy_action); edit_action = QAction("📝 Editar Datos Partida", self); edit_action.triggered.connect(self.edit_selected_game); menu.addAction(edit_action); is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
-        if not is_readonly or self.db.active_db_name == "Clipbase": menu.addSeparator(); del_action = QAction("❌ Eliminar Partida", self); del_action.triggered.connect(self.delete_selected_game); menu.addAction(del_action)
+        menu = QMenu()
+        copy_action = QAction(qta.icon('fa5s.copy'), "📋 Copiar Partida a...", self)
+        copy_action.triggered.connect(self.copy_selected_game)
+        menu.addAction(copy_action)
+        
+        edit_action = QAction(qta.icon('fa5s.edit'), "📝 Editar Datos Partida", self)
+        edit_action.triggered.connect(self.edit_selected_game)
+        menu.addAction(edit_action)
+        
+        is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
+        if not is_readonly or self.db.active_db_name == "Clipbase":
+            menu.addSeparator()
+            del_action = QAction(qta.icon('fa5s.trash-alt'), "❌ Eliminar Partida", self)
+            del_action.triggered.connect(self.delete_selected_game)
+            menu.addAction(del_action)
         menu.exec(self.db_table.viewport().mapToGlobal(pos))
 
     def on_db_list_context_menu(self, pos):
         item = self.db_list_widget.itemAt(pos)
         if not item or item.text() == "Clipbase": return
-        menu = QMenu(); remove_action = QAction("❌ Quitar de la lista", self); remove_action.triggered.connect(lambda: self.remove_database(item)); menu.addAction(remove_action); menu.exec(self.db_list_widget.mapToGlobal(pos))
+        
+        name = item.text()
+        is_readonly = self.db.db_metadata.get(name, {}).get("read_only", True)
+        
+        menu = QMenu()
+        
+        # Opción para alternar Solo Lectura
+        if is_readonly:
+            unlock_action = QAction(qta.icon('fa5s.unlock'), " Permitir Escritura", self)
+            unlock_action.triggered.connect(lambda: self.toggle_db_readonly(item, False))
+            menu.addAction(unlock_action)
+        else:
+            lock_action = QAction(qta.icon('fa5s.lock'), " Poner Solo Lectura", self)
+            lock_action.triggered.connect(lambda: self.toggle_db_readonly(item, True))
+            menu.addAction(lock_action)
+            
+        menu.addSeparator()
+        remove_action = QAction(qta.icon('fa5s.times', color='red'), " Quitar de la lista", self)
+        remove_action.triggered.connect(lambda: self.remove_database(item))
+        menu.addAction(remove_action)
+        menu.exec(self.db_list_widget.mapToGlobal(pos))
+
+    def toggle_db_readonly(self, item, status):
+        name = item.text()
+        if self.db.set_readonly(name, status):
+            if status:
+                item.setForeground(QColor("#888888"))
+                item.setIcon(qta.icon('fa5s.lock', color='#888888'))
+            else:
+                item.setForeground(QColor("#000000"))
+                item.setIcon(qta.icon('fa5s.unlock', color='#2e7d32'))
+            state = "Solo Lectura" if status else "Lectura/Escritura"
+            self.statusBar().showMessage(f"Base '{name}' ahora en modo {state}", 3000)
 
     def remove_database(self, item):
         name = item.text()
@@ -258,8 +383,14 @@ class MainWindow(QMainWindow):
 
     def load_parquet(self, path):
         self.progress.setVisible(False); name = self.db.load_parquet(path)
-        if not self.db_list_widget.findItems(name, Qt.MatchExactly): self.db_list_widget.addItem(name)
-        self.db_list_widget.setCurrentRow(self.db_list_widget.count()-1); self.save_config()
+        items = self.db_list_widget.findItems(name, Qt.MatchExactly)
+        if not items:
+            item = QListWidgetItem(name)
+            item.setForeground(QColor("#888888"))
+            item.setIcon(qta.icon('fa5s.lock', color='#888888'))
+            self.db_list_widget.addItem(item)
+        else: item = items[0]
+        self.db_list_widget.setCurrentItem(item); self.save_config()
 
     def init_menu(self):
         menubar = self.menuBar()
@@ -274,21 +405,57 @@ class MainWindow(QMainWindow):
         # Menú Bases de Datos
         db_menu = menubar.addMenu("&Bases de Datos")
         
-        open_pgn_action = QAction("Importar &PGN...", self)
+        new_db_action = QAction(qta.icon('fa5s.plus'), "Nueva Base &Vacía...", self)
+        new_db_action.triggered.connect(self.create_new_db)
+        db_menu.addAction(new_db_action)
+        
+        db_menu.addSeparator()
+
+        open_pgn_action = QAction(qta.icon('fa5s.file-import'), "Importar &PGN...", self)
         open_pgn_action.setShortcut("Ctrl+I")
         open_pgn_action.triggered.connect(self.import_pgn)
         db_menu.addAction(open_pgn_action)
         
-        open_parquet_action = QAction("Abrir &Parquet...", self)
+        open_parquet_action = QAction(qta.icon('fa5s.file-code'), "Abrir &Parquet...", self)
         open_parquet_action.setShortcut("Ctrl+O")
         open_parquet_action.triggered.connect(self.open_parquet_file)
         db_menu.addAction(open_parquet_action)
+
+        db_menu.addSeparator()
+        
+        delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self)
+        delete_db_action.triggered.connect(self.delete_current_db_file)
+        db_menu.addAction(delete_db_action)
         
         # Menú Tablero
         board_menu = menubar.addMenu("&Tablero")
         settings_action = QAction("&Configuración...", self)
         settings_action.triggered.connect(self.open_settings)
         board_menu.addAction(settings_action)
+
+    def create_new_db(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Crear Nueva Base", "/data/chess", "Chess Parquet (*.parquet)")
+        if path:
+            if not path.endswith(".parquet"): path += ".parquet"
+            self.db.create_new_database(path)
+            self.load_parquet(path) # Refrescar UI cargando la base recién creada
+            self.statusBar().showMessage(f"Base creada y cargada: {os.path.basename(path)}", 3000)
+
+    def delete_current_db_file(self):
+        name = self.db.active_db_name
+        if name == "Clipbase":
+            QMessageBox.warning(self, "Acción no permitida", "No se puede eliminar el archivo de la Clipbase interna.")
+            return
+            
+        ret = QMessageBox.question(self, "Eliminar Base", 
+            f"¿Estás seguro de que quieres eliminar FISICAMENTE el archivo de la base '{name}'?\n\nEsta acción no se puede deshacer.",
+            QMessageBox.Yes | QMessageBox.No)
+            
+        if ret == QMessageBox.Yes:
+            if self.db.delete_database_from_disk(name):
+                self.statusBar().showMessage(f"Archivo de base '{name}' eliminado", 3000)
+            else:
+                QMessageBox.critical(self, "Error", "No se pudo eliminar el archivo. Comprueba que no esté abierto por otro programa.")
 
     def import_pgn(self):
         path, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "/data/chess", "Chess PGN (*.pgn)")
@@ -325,10 +492,20 @@ class MainWindow(QMainWindow):
         if df is None: return
         self.db_table.setSortingEnabled(False)
         total = self.db.get_active_df().height
+        
         if df_to_show is None or not isinstance(df_to_show, pl.DataFrame):
-            self.label_db_stats.setText(f"[{total}/{total}]"); self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
+            self.label_db_stats.setText(f"[{total}/{total}]")
+            self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
+            self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         else:
-            self.label_db_stats.setText(f"[{df_to_show.height}/{total}]")
+            count = df_to_show.height
+            self.label_db_stats.setText(f"[{count}/{total}]")
+            # Fondo verde suave si hay un filtro activo (y hay menos partidas que el total)
+            if count < total:
+                self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #2e7d32; background: #e8f5e9; padding: 4px; border-radius: 3px; border: 1px solid #a5d6a7; margin-bottom: 5px;")
+            else:
+                self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
+        
         disp = df.head(1000); self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
             self.db_table.setItem(i, 0, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 1, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 2, QTableWidgetItem(str(r["w_elo"]))); self.db_table.setItem(i, 3, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 4, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 5, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
@@ -351,6 +528,46 @@ class MainWindow(QMainWindow):
             st = "class='active'" if i == self.game.current_idx - 1 else ""
             html += f"<a {st} href='{i+1}'>{san_move}</a> "; temp.push(m)
         self.hist_ana.setHtml(html)
+
+    def save_to_active_db(self):
+        # Guardar partida actual en la base seleccionada
+        db_name = self.db.active_db_name
+        is_readonly = self.db.db_metadata.get(db_name, {}).get("read_only", True)
+        
+        if is_readonly and db_name != "Clipbase":
+            QMessageBox.warning(self, "Base de Solo Lectura", 
+                f"La base '{db_name}' es de solo lectura. Prueba a guardar en Clipbase.")
+            return
+
+        line_uci = self.game.current_line_uci
+        import chess.polyglot
+        board = chess.Board()
+        hashes = [chess.polyglot.zobrist_hash(board)]
+        for move in self.game.full_mainline:
+            board.push(move)
+            hashes.append(chess.polyglot.zobrist_hash(board))
+
+        game_data = {
+            "id": int(time.time() * 1000),
+            "white": "Jugador Blanco", "black": "Jugador Negro",
+            "w_elo": 2500, "b_elo": 2500, "result": "*", 
+            "date": datetime.now().strftime("%Y.%m.%d"),
+            "event": "Análisis Local", 
+            "line": " ".join([m.uci() for m in self.game.full_mainline[:12]]),
+            "full_line": line_uci,
+            "fens": hashes
+        }
+        
+        if db_name == "Clipbase":
+            self.db.add_to_clipbase(game_data)
+        else:
+            # Para bases Parquet, añadimos al DataFrame en memoria
+            df = self.db.get_active_df()
+            self.db.dbs[db_name] = pl.concat([df, pl.DataFrame([game_data], schema=df.schema)])
+            # Aquí podríamos guardar a disco físicamente si quisiéramos persistencia real
+            
+        self.db.set_active_db(db_name) # Refresca vista
+        self.statusBar().showMessage(f"Partida guardada en {db_name}", 3000)
 
     def save_config(self):
         dbs_info = [{"path": m["path"]} for m in self.db.db_metadata.values() if m.get("path")]; colors = {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark}; config = {"dbs": dbs_info, "colors": colors}; json.dump(config, open(CONFIG_FILE, "w"))
