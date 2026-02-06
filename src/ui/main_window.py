@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QProgressBar, QHeaderView, QTextBrowser, 
                              QStatusBar, QTabWidget, QListWidget, QListWidgetItem, QMenu, 
                              QColorDialog, QMenuBar, QAbstractItemView, QToolBar, 
-                             QStyle, QSizePolicy, QMessageBox)
+                             QStyle, QSizePolicy, QMessageBox, QApplication)
 from PySide6.QtCore import Qt, QPointF, QTimer
 from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QColor, QBrush
 import qtawesome as qta
@@ -23,6 +23,10 @@ from ui.board import ChessBoard
 from ui.settings_dialog import SettingsDialog
 from ui.search_dialog import SearchDialog
 from ui.edit_game_dialog import EditGameDialog
+from ui.widgets.results_bar import ResultsWidget
+from ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
+                       STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
+                       STYLE_BADGE_ERROR)
 from core.engine_worker import EngineWorker
 
 class MainWindow(QMainWindow):
@@ -100,14 +104,18 @@ class MainWindow(QMainWindow):
         board_container_layout.addWidget(self.toolbar_ana)
         
         board_eval_layout = QHBoxLayout(); board_eval_layout.setSpacing(5)
-        self.eval_bar = QProgressBar(); self.eval_bar.setOrientation(Qt.Vertical); self.eval_bar.setRange(-1000, 1000); self.eval_bar.setValue(0); self.eval_bar.setTextVisible(False); self.eval_bar.setFixedWidth(15); self.eval_bar.setStyleSheet("QProgressBar { border: 1px solid #777; background-color: #333; } QProgressBar::chunk { background-color: #eee; }"); self.eval_bar.setVisible(False)
+        self.eval_bar = QProgressBar(); self.eval_bar.setOrientation(Qt.Vertical); self.eval_bar.setRange(-1000, 1000); self.eval_bar.setValue(0); self.eval_bar.setTextVisible(False); self.eval_bar.setFixedWidth(15); self.eval_bar.setStyleSheet(STYLE_EVAL_BAR); self.eval_bar.setVisible(False)
         self.board_ana = ChessBoard(self.game.board, self); self.board_ana.color_light, self.board_ana.color_dark = self.def_light, self.def_dark
+        # Conectar señales de arrastre para evitar crashes con el motor
+        self.board_ana.piece_drag_started.connect(lambda: setattr(self, 'is_dragging', True))
+        self.board_ana.piece_drag_finished.connect(lambda: setattr(self, 'is_dragging', False))
+        
         board_eval_layout.addWidget(self.eval_bar); board_eval_layout.addWidget(self.board_ana); board_container_layout.addLayout(board_eval_layout)
         ana_layout.addWidget(board_container)
         
         panel_ana = QWidget(); p_ana_layout = QVBoxLayout(panel_ana)
         info_box = QWidget(); info_layout = QHBoxLayout(info_box); info_layout.setContentsMargins(0, 0, 0, 0)
-        self.label_apertura = QLabel("<b>Apertura:</b> Inicial"); self.label_eval = QLabel(""); self.label_eval.setStyleSheet("font-weight: bold; font-size: 14px; color: #d32f2f; margin-left: 10px;")
+        self.label_apertura = QLabel("<b>Apertura:</b> Inicial"); self.label_eval = QLabel(""); self.label_eval.setStyleSheet(STYLE_LABEL_EVAL)
         info_layout.addWidget(self.label_apertura, 1); info_layout.addWidget(self.label_eval); p_ana_layout.addWidget(info_box)
         
         self.tree_ana = self.create_scid_table(["Movim.", "Frec.", "Barra", "Win %", "AvElo", "Perf"])
@@ -131,7 +139,7 @@ class MainWindow(QMainWindow):
         # Indicador de estadísticas encima de Bases Abiertas
         self.label_db_stats = QLabel("[0/0]")
         self.label_db_stats.setAlignment(Qt.AlignCenter)
-        self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
+        self.label_db_stats.setStyleSheet(STYLE_BADGE_NORMAL)
         db_sidebar.addWidget(self.label_db_stats)
 
         # Lista de Bases
@@ -197,7 +205,11 @@ class MainWindow(QMainWindow):
             self.label_eval.setText(""); self.board_ana.set_engine_move(None)
 
     def on_engine_update(self, eval_str, best_move, mainline):
-        self.label_eval.setText(eval_str); self.board_ana.set_engine_move(best_move if best_move else None)
+        self.label_eval.setText(eval_str)
+        # Solo actualizar el tablero (flechas) si NO estamos arrastrando una pieza
+        if not getattr(self, 'is_dragging', False):
+            self.board_ana.set_engine_move(best_move if best_move else None)
+            
         try:
             if "M" in eval_str: val = 1000 if "+" in eval_str or eval_str[0].isdigit() or (eval_str.startswith("M") and not eval_str.startswith("-M")) else -1000
             else: val = int(float(eval_str) * 100)
@@ -226,23 +238,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'board_ana') and not self.tree_ana.selectedItems(): self.board_ana.set_hover_move(None)
         super().leaveEvent(event)
 
-    class ResultsWidget(QWidget):
-        def __init__(self, w, d, b, total, is_white):
-            super().__init__()
-            self.w, self.d, self.b, self.total, self.is_white = w, d, b, total, is_white
-            self.setMinimumWidth(80); self.setFixedHeight(18)
-            if total > 0:
-                p_win = ((w + 0.5 * d) / total) * 100 if is_white else ((b + 0.5 * d) / total) * 100
-                self.setToolTip(f"Éxito: {p_win:.1f}% (W:{w} D:{d} L:{b})")
-
-        def paintEvent(self, event):
-            if self.total == 0: return
-            p = QPainter(self); p.setRenderHint(QPainter.Antialiasing); rect = self.rect().adjusted(2, 4, -2, -4)
-            w_px = int(rect.width() * (self.w / self.total)); d_px = int(rect.width() * (self.d / self.total)); b_px = max(0, rect.width() - w_px - d_px)
-            p.fillRect(rect.x(), rect.y(), w_px, rect.height(), QColor("#eee")); p.fillRect(rect.x() + w_px, rect.y(), d_px, rect.height(), QColor("#999")); p.fillRect(rect.x() + w_px + d_px, rect.y(), b_px, rect.height(), QColor("#333")); p.setPen(QColor("#777")); p.drawRect(rect)
-
     def create_scid_table(self, headers):
-        table = QTableWidget(0, len(headers)); table.setHorizontalHeaderLabels(headers); table.setEditTriggers(QAbstractItemView.NoEditTriggers); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setContextMenuPolicy(Qt.CustomContextMenu); table.verticalHeader().setVisible(False); table.verticalHeader().setDefaultSectionSize(22); table.horizontalHeader().setHighlightSections(True); table.setSortingEnabled(True); table.setShowGrid(True); table.setStyleSheet("QHeaderView::section { font-weight: bold; }")
+        table = QTableWidget(0, len(headers)); table.setHorizontalHeaderLabels(headers); table.setEditTriggers(QAbstractItemView.NoEditTriggers); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setContextMenuPolicy(Qt.CustomContextMenu); table.verticalHeader().setVisible(False); table.verticalHeader().setDefaultSectionSize(22); table.horizontalHeader().setHighlightSections(True); table.setSortingEnabled(True); table.setShowGrid(True); table.setStyleSheet(STYLE_TABLE_HEADER)
         return table
 
     def setup_toolbar(self, toolbar):
@@ -522,8 +519,7 @@ class MainWindow(QMainWindow):
         if path:
             self.progress.setValue(0)
             self.progress.show()
-            from PySide6.QtWidgets import QApplication
-            PySide6.QtWidgets.QApplication.processEvents() # Forzar dibujado inicial
+            QApplication.processEvents() # Forzar dibujado inicial
             
             self.worker = PGNWorker(path)
             self.worker.progress.connect(self.progress.setValue)
@@ -678,7 +674,7 @@ class MainWindow(QMainWindow):
                 san = self.game.board.san(mv)
                 it_move = QTableWidgetItem(san); it_move.setData(Qt.UserRole, r["uci"]); table.setItem(valid_rows, 0, it_move)
                 it_count = QTableWidgetItem(); it_count.setData(Qt.DisplayRole, r["c"]); table.setItem(valid_rows, 1, it_count)
-                table.setCellWidget(valid_rows, 2, self.ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white))
+                table.setCellWidget(valid_rows, 2, ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white))
                 win_rate = ((r["w"] + 0.5 * r["d"]) / r["c"] if is_white else (r["b"] + 0.5 * r["d"]) / r["c"]) * 100
                 it_win = QTableWidgetItem(f"{win_rate:.1f}%"); it_win.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter); table.setItem(valid_rows, 3, it_win)
                 score = (r["w"] + 0.5 * r["d"]) / r["c"] if is_white else (r["b"] + 0.5 * r["d"]) / r["c"]

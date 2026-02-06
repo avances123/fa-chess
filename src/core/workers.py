@@ -26,7 +26,7 @@ class PGNWorker(QThread):
                     
                     games.append(extract_game_data(count, game))
                     count += 1
-                    if count % 1000 == 0:
+                    if count % 100 == 0:
                         self.progress.emit(int((pgn.tell() / file_size) * 100))
                         self.status.emit(f"Cargando partida {count}...")
             

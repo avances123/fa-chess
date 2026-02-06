@@ -3,10 +3,14 @@ import chess.svg
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QMenu
 from PySide6.QtSvgWidgets import QGraphicsSvgItem
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, Signal
 from PySide6.QtGui import QPainter, QBrush, QColor, QAction
+from shiboken6 import isValid
 
 class ChessBoard(QGraphicsView):
+    piece_drag_started = Signal()
+    piece_drag_finished = Signal()
+
     def __init__(self, board, parent_main):
         super().__init__()
         self.board = board
@@ -95,16 +99,21 @@ class ChessBoard(QGraphicsView):
                     if (item.pos() - target_pos).manhattanLength() < 5:
                         self.drag_item = item
                         self.drag_item.setZValue(100)
+                        self.piece_drag_started.emit() # Avisar que empezamos a arrastrar
                         break
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self.drag_item:
-            pos = self.mapToScene(event.position().toPoint())
-            self.drag_item.setPos(pos - QPointF(self.square_size/2, self.square_size/2))
+            if isValid(self.drag_item):
+                pos = self.mapToScene(event.position().toPoint())
+                self.drag_item.setPos(pos - QPointF(self.square_size/2, self.square_size/2))
+            else:
+                self.drag_item = None # Objeto muerto, soltar
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        self.piece_drag_finished.emit() # Avisar que terminamos
         if self.selected_square is not None:
             pos = self.mapToScene(event.position().toPoint())
             target_sq = self.get_square(pos)

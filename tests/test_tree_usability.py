@@ -44,10 +44,11 @@ def test_move_clears_selection_and_arrow(app, qtbot):
 
 def test_results_bar_tooltip(app):
     # Probar que el widget de resultados calcula bien el éxito para el bando que mueve
-    res_w = app.ResultsWidget(w=10, d=10, b=0, total=20, is_white=True)
+    from ui.widgets.results_bar import ResultsWidget
+    res_w = ResultsWidget(w=10, d=10, b=0, total=20, is_white=True)
     assert "Éxito: 75.0%" in res_w.toolTip()
     
-    res_b = app.ResultsWidget(w=10, d=10, b=0, total=20, is_white=False)
+    res_b = ResultsWidget(w=10, d=10, b=0, total=20, is_white=False)
     assert "Éxito: 25.0%" in res_b.toolTip()
 
 def test_tree_double_click_makes_move(app):

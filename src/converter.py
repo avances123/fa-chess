@@ -92,7 +92,7 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
                 games_data.append(extract_game_data(count, game))
                 
                 count += 1
-                if count % 200 == 0:
+                if count % 100 == 0:
                     elapsed = time.time() - start_time
                     speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
                     progress.update(task, completed=count, speed=speed)
