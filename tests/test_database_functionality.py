@@ -4,6 +4,7 @@ import polars as pl
 import chess
 from PySide6.QtCore import Qt, QUrl
 from ui.main_window import MainWindow
+from PySide6.QtWidgets import QPushButton
 import ui.main_window
 
 @pytest.fixture
@@ -48,7 +49,6 @@ def test_database_real_game_flow(app, qtbot):
         app.step_forward()
     
     # Tras 2. d4 Bb7
-    # La FEN de Owen's Defense tras e4 b6 d4 Bb7
     expected_fen_prefix = "rn1qkbnr/pbpppppp/1p6/8/3PP3/8/PPP2PPP/RNBQKBNR"
     assert app.board.fen().startswith(expected_fen_prefix)
 
@@ -67,3 +67,30 @@ def test_database_remove_and_stats(app, qtbot):
     # Al estar mockeado el config, ahora sí debería estar vacío y volver a Clipbase
     assert app.db.active_db_name == "Clipbase"
     assert app.label_db_stats.text() == "[0/0]"
+
+def test_clear_filter_button(app, qtbot):
+    parquet_path = os.path.abspath("tests/data/real_sample.parquet")
+    app.load_parquet(parquet_path)
+    
+    # 1. Aplicar un filtro (ej: buscar alguien que NO existe)
+    app.search_criteria = {"white": "Inexistente", "black": "", "min_elo": "", "result": "Cualquiera"}
+    filtered = app.db.filter_db(app.db.active_db_name, app.search_criteria)
+    app.refresh_db_list(filtered)
+    
+    assert app.db_table.rowCount() == 0
+    assert app.label_db_stats.text() == "[0/1]"
+    
+    # 2. Buscar y pulsar el botón "Quitar Filtros"
+    btn_clear = None
+    for btn in app.findChildren(QPushButton):
+        if "Quitar Filtros" in btn.text():
+            btn_clear = btn
+            break
+    
+    assert btn_clear is not None
+    qtbot.mouseClick(btn_clear, Qt.LeftButton)
+    
+    # 3. Verificar que se han restablecido las partidas y las stats
+    assert app.db_table.rowCount() == 1
+    assert app.label_db_stats.text() == "[1/1]"
+    assert app.search_criteria["white"] == ""

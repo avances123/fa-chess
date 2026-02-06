@@ -61,8 +61,9 @@ class MainWindow(QMainWindow):
         self.board_ana.flip()
 
     def search_current_position(self):
-        # Feature 4: Buscar la posición actual (EPD) en la base de datos
-        epd = self.board.epd()
+        # Feature 4: Buscar la posición actual (Zobrist Hash) en la base de datos
+        import chess.polyglot
+        pos_hash = chess.polyglot.zobrist_hash(self.board)
         
         # Verificar si la base actual soporta búsqueda por posición
         df = self.db.get_active_df()
@@ -71,14 +72,13 @@ class MainWindow(QMainWindow):
             return
 
         if "fens" not in df.columns:
-            # Depuración: imprimir columnas detectadas
             print(f"DEBUG: Columnas en base activa '{self.db.active_db_name}': {df.columns}")
             QMessageBox.warning(self, "Búsqueda por Posición", 
                 f"La base '{self.db.active_db_name}' no tiene el índice de posiciones.\n\n"
                 "Por favor, vuelve a abrir el archivo PGN original para re-importarla.")
             return
 
-        self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "position_epd": epd}
+        self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "position_hash": pos_hash}
         filtered = self.db.filter_db(self.db.active_db_name, self.search_criteria)
         if filtered is not None:
             self.tabs.setCurrentIndex(1) # Cambiar a la pestaña de Gestor para ver resultados
@@ -123,7 +123,13 @@ class MainWindow(QMainWindow):
         # --- TAB 2: GESTOR ---
         self.tab_db = QWidget(); self.tabs.addTab(self.tab_db, "Gestor Bases"); db_layout = QHBoxLayout(self.tab_db); db_sidebar = QVBoxLayout()
         self.db_list_widget = QListWidget(); self.db_list_widget.addItem("Clipbase"); self.db_list_widget.setContextMenuPolicy(Qt.CustomContextMenu); self.db_list_widget.currentRowChanged.connect(self.switch_db); self.db_list_widget.customContextMenuRequested.connect(self.on_db_list_context_menu)
-        self.progress = QProgressBar(); self.progress.setVisible(False); db_sidebar.addWidget(self.db_list_widget); self.btn_search = QPushButton("🔍 Filtrar Partidas"); self.btn_search.clicked.connect(self.open_search); db_sidebar.addWidget(self.btn_search); self.label_db_stats = QLabel("[0/0]"); self.label_db_stats.setAlignment(Qt.AlignCenter); db_sidebar.addWidget(self.label_db_stats); db_sidebar.addWidget(self.progress); db_layout.addLayout(db_sidebar, 1)
+        self.progress = QProgressBar(); self.progress.setVisible(False); db_sidebar.addWidget(self.db_list_widget);         self.btn_search = QPushButton("🔍 Filtrar Partidas"); self.btn_search.clicked.connect(self.open_search); db_sidebar.addWidget(self.btn_search)
+        
+        self.btn_clear_filter = QPushButton("🧹 Quitar Filtros")
+        self.btn_clear_filter.clicked.connect(lambda: self.refresh_db_list())
+        db_sidebar.addWidget(self.btn_clear_filter)
+        
+        self.label_db_stats = QLabel("[0/0]"); self.label_db_stats.setAlignment(Qt.AlignCenter); db_sidebar.addWidget(self.label_db_stats); db_sidebar.addWidget(self.progress); db_layout.addLayout(db_sidebar, 1)
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         db_content = QVBoxLayout(); self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"]); self.db_table.setFont(table_font); self.db_table.itemDoubleClicked.connect(self.load_game_from_list); self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu); db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
         for path in getattr(self, 'pending_dbs', []):
@@ -289,10 +295,12 @@ class MainWindow(QMainWindow):
         # Desactivar ordenación mientras rellenamos para evitar filas en blanco
         self.db_table.setSortingEnabled(False)
         
+        total = self.db.get_active_df().height
         if df_to_show is None:
-            total = df.height
             self.label_db_stats.setText(f"[{total}/{total}]")
             self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
+        else:
+            self.label_db_stats.setText(f"[{df_to_show.height}/{total}]")
             
         disp = df.head(1000)
         self.db_table.setRowCount(disp.height)

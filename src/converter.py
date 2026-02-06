@@ -1,4 +1,5 @@
 import chess.pgn
+import chess.polyglot
 import polars as pl
 import os
 import time
@@ -14,16 +15,16 @@ def count_games(pgn_path):
     return count
 
 def extract_game_data(count, game):
-    """Lógica unificada para extraer datos de un objeto chess.pgn.Game"""
+    """Lógica unificada para extraer datos usando Zobrist Hashes para las posiciones"""
     headers = game.headers
     board = game.board()
-    fens = [board.epd()]
+    hashes = [chess.polyglot.zobrist_hash(board)]
     uci_moves = []
     
     for move in game.mainline_moves():
         uci_moves.append(move.uci())
         board.push(move)
-        fens.append(board.epd())
+        hashes.append(chess.polyglot.zobrist_hash(board))
     
     def safe_int(val):
         if not val: return 0
@@ -43,7 +44,7 @@ def extract_game_data(count, game):
         "event": headers.get("Event", "?"),
         "line": " ".join(uci_moves[:12]),
         "full_line": " ".join(uci_moves),
-        "fens": " ".join(fens)
+        "fens": hashes # Ahora guardamos una lista de enteros Int64
     }
 
 def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):

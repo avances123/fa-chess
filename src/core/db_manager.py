@@ -61,13 +61,12 @@ class DBManager:
             q = q.filter(pl.col("black").str.contains(criteria["black"]))
         
         # Búsqueda por posición (Feature 4)
-        if criteria.get("position_epd"):
+        if criteria.get("position_hash"):
             if "fens" in df.columns:
-                # Buscamos el EPD actual dentro de la lista de FENs de la partida
-                q = q.filter(pl.col("fens").str.contains(criteria["position_epd"]))
+                # Buscamos el Hash actual dentro de la lista de hashes de la partida
+                # Polars es extremadamente rápido buscando enteros en listas
+                q = q.filter(pl.col("fens").list.contains(criteria["position_hash"]))
             else:
-                # Si la base es antigua y no tiene FENs, no podemos filtrar por posición
-                # Podríamos lanzar una excepción capturable o simplemente ignorar el filtro
                 pass
 
         min_elo = criteria.get("min_elo")
