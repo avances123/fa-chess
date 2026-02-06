@@ -52,6 +52,52 @@ class StatsWorker(QThread):
         except:
             self.finished.emit(None)
 
+class PGNExportWorker(QThread):
+    progress = Signal(int)
+    finished = Signal(str)
+    status = Signal(str)
+
+    def __init__(self, df, output_path):
+        super().__init__()
+        self.df = df
+        self.output_path = output_path
+
+    def run(self):
+        import chess.pgn
+        total = len(self.df)
+        try:
+            with open(self.output_path, "w", encoding="utf-8") as f:
+                for idx, row in enumerate(self.df.iter_rows(named=True)):
+                    game = chess.pgn.Game()
+                    game.headers["White"] = row["white"]
+                    game.headers["Black"] = row["black"]
+                    game.headers["Result"] = row["result"]
+                    game.headers["Date"] = row["date"]
+                    game.headers["Event"] = row["event"]
+                    game.headers["WhiteElo"] = str(row["w_elo"])
+                    game.headers["BlackElo"] = str(row["b_elo"])
+                    
+                    game_board = chess.Board()
+                    node = game
+                    for uci in row["full_line"].split():
+                        try:
+                            move = chess.Move.from_uci(uci)
+                            if move in game_board.legal_moves:
+                                node = node.add_main_variation(move)
+                                game_board.push(move)
+                            else: break
+                        except: break
+                    
+                    f.write(str(game) + "\n\n")
+                    
+                    if idx % 100 == 0:
+                        self.progress.emit(int((idx / total) * 100))
+                        self.status.emit(f"Exportando partida {idx}/{total}...")
+            
+            self.finished.emit(self.output_path)
+        except Exception as e:
+            self.status.emit(f"Error en exportación: {e}")
+
 class MaskWorker(QThread):
     progress = Signal(int)
     finished = Signal(set)

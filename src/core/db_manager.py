@@ -132,6 +132,22 @@ class DBManager(QObject):
         self.filter_updated.emit(self.current_filter_df)
         return self.current_filter_df
 
+    def invert_filter(self):
+        """Muestra el conjunto opuesto de partidas al filtro actual"""
+        df_active = self.get_active_df()
+        if df_active is None: return None
+        
+        if self.current_filter_df is None:
+            # Si no hay filtro, el inverso es el conjunto vacío
+            self.current_filter_df = df_active.clear()
+        else:
+            # Inverso: Base completa filtrada por los IDs que NO están en el filtro actual
+            current_ids = self.current_filter_df.select("id")
+            self.current_filter_df = df_active.filter(~pl.col("id").is_in(current_ids["id"]))
+            
+        self.filter_updated.emit(self.current_filter_df)
+        return self.current_filter_df
+
     def get_stats_for_position(self, line_uci, is_white):
         # USAR FILTRO SI EXISTE, SI NO TODA LA BASE
         df = self.current_filter_df if self.current_filter_df is not None else self.get_active_df()

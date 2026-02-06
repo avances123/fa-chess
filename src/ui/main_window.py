@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QCo
 import qtawesome as qta
 
 from config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
-from core.workers import PGNWorker, StatsWorker
+from core.workers import PGNWorker, StatsWorker, PGNExportWorker
 from core.eco import ECOManager
 from core.db_manager import DBManager
 from core.game_controller import GameController
@@ -153,18 +153,38 @@ class MainWindow(QMainWindow):
         actions_group = QWidget(); actions_layout = QVBoxLayout(actions_group); actions_layout.setContentsMargins(0, 5, 0, 5)
         
         self.btn_search = QPushButton(qta.icon('fa5s.search'), " Filtrar Partidas"); self.btn_search.clicked.connect(self.open_search); actions_layout.addWidget(self.btn_search)
-        self.btn_clear_filter = QPushButton(qta.icon('fa5s.eraser'), " Quitar Filtros"); self.btn_clear_filter.clicked.connect(lambda: self.db.set_active_db(self.db.active_db_name)); actions_layout.addWidget(self.btn_clear_filter)
-        self.btn_save_active = QPushButton(qta.icon('fa5s.save'), " Guardar en Base"); self.btn_save_active.setToolTip("Guardar partida actual en la base activa"); self.btn_save_active.clicked.connect(self.save_to_active_db); actions_layout.addWidget(self.btn_save_active)
         
+        self.btn_invert_filter = QPushButton(qta.icon('fa5s.exchange-alt'), " Invertir Filtro")
+        self.btn_invert_filter.clicked.connect(self.trigger_invert_filter)
+        actions_layout.addWidget(self.btn_invert_filter)
+
+        self.btn_clear_filter = QPushButton(qta.icon('fa5s.eraser'), " Quitar Filtros"); self.btn_clear_filter.clicked.connect(lambda: self.db.set_active_db(self.db.active_db_name)); actions_layout.addWidget(self.btn_clear_filter)
+        
+        actions_group.setLayout(actions_layout) # Asegurar que el layout se aplica si faltaba
         db_sidebar.addWidget(actions_group)
         
-        self.progress = QProgressBar(); self.progress.setVisible(False); self.progress.setFixedHeight(8); db_sidebar.addWidget(self.progress)
         db_layout.addLayout(db_sidebar, 1)
         
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         
         # Contenido de la Tabla
-        db_content = QVBoxLayout(); self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"]); self.db_table.setFont(table_font); self.db_table.itemDoubleClicked.connect(self.load_game_from_list); self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu); db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
+        db_content = QVBoxLayout()
+        self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"])
+        self.db_table.setFont(table_font)
+        self.db_table.itemDoubleClicked.connect(self.load_game_from_list)
+        self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
+        db_content.addWidget(self.db_table)
+        db_layout.addLayout(db_content, 4)
+        
+        # Barra de progreso global en la StatusBar
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(150)
+        self.progress.setFixedHeight(12)
+        self.progress.setTextVisible(False)
+        self.progress.setVisible(False)
+        self.progress.setStyleSheet("QProgressBar { border: 1px solid #aaa; background: #eee; } QProgressBar::chunk { background: #4caf50; }")
+        self.statusBar().addPermanentWidget(self.progress)
+
         for path in getattr(self, 'pending_dbs', []):
             if os.path.exists(path): self.load_parquet(path)
 
@@ -382,7 +402,7 @@ class MainWindow(QMainWindow):
                 if self.db.update_game(target_db, game_id, dialog.get_data()): self.db.set_active_db(target_db); self.statusBar().showMessage("Partida actualizada", 2000)
 
     def load_parquet(self, path):
-        self.progress.setVisible(False); name = self.db.load_parquet(path)
+        self.progress.hide(); name = self.db.load_parquet(path)
         items = self.db_list_widget.findItems(name, Qt.MatchExactly)
         if not items:
             item = QListWidgetItem(name)
@@ -421,6 +441,11 @@ class MainWindow(QMainWindow):
         open_parquet_action.triggered.connect(self.open_parquet_file)
         db_menu.addAction(open_parquet_action)
 
+        export_pgn_action = QAction(qta.icon('fa5s.file-export'), "Exportar &Filtro a PGN...", self)
+        export_pgn_action.setShortcut("Ctrl+E")
+        export_pgn_action.triggered.connect(self.export_filter_to_pgn)
+        db_menu.addAction(export_pgn_action)
+
         db_menu.addSeparator()
         
         delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self)
@@ -452,15 +477,54 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No)
             
         if ret == QMessageBox.Yes:
-            if self.db.delete_database_from_disk(name):
-                self.statusBar().showMessage(f"Archivo de base '{name}' eliminado", 3000)
-            else:
-                QMessageBox.critical(self, "Error", "No se pudo eliminar el archivo. Comprueba que no esté abierto por otro programa.")
+            # Necesitamos el item de la lista para llamar a remove_database
+            items = self.db_list_widget.findItems(name, Qt.MatchExactly)
+            if items:
+                item = items[0]
+                if self.db.delete_database_from_disk(name):
+                    # El DBManager ya borró el archivo y el dato, 
+                    # ahora quitamos el item de la lista visual
+                    self.db_list_widget.takeItem(self.db_list_widget.row(item))
+                    if self.db.active_db_name == "Clipbase": 
+                        self.db_list_widget.setCurrentRow(0)
+                    self.save_config()
+                    self.statusBar().showMessage(f"Archivo de base '{name}' eliminado", 3000)
+                else:
+                    QMessageBox.critical(self, "Error", "No se pudo eliminar el archivo. Comprueba que no esté abierto por otro programa.")
+
+    def export_filter_to_pgn(self):
+        # Exportar partidas visibles (filtradas) a un archivo PGN
+        df = self.db.current_filter_df if self.db.current_filter_df is not None else self.db.get_active_df()
+        if df is None or df.is_empty():
+            self.statusBar().showMessage("No hay partidas para exportar", 3000)
+            return
+
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar Filtro a PGN", "/data/chess", "Chess PGN (*.pgn)")
+        if not path: return
+        if not path.endswith(".pgn"): path += ".pgn"
+
+        self.progress.setValue(0)
+        self.progress.show()
+        
+        self.export_worker = PGNExportWorker(df, path)
+        self.export_worker.progress.connect(self.progress.setValue)
+        self.export_worker.status.connect(self.statusBar().showMessage)
+        self.export_worker.finished.connect(self.on_export_finished)
+        self.export_worker.start()
+
+    def on_export_finished(self, path):
+        self.progress.hide()
+        self.statusBar().showMessage(f"Exportadas partidas a {os.path.basename(path)}", 5000)
+        QMessageBox.information(self, "Exportación Completada", f"Se han exportado las partidas correctamente a:\n{path}")
 
     def import_pgn(self):
         path, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "/data/chess", "Chess PGN (*.pgn)")
         if path:
-            self.progress.setVisible(True)
+            self.progress.setValue(0)
+            self.progress.show()
+            from PySide6.QtWidgets import QApplication
+            PySide6.QtWidgets.QApplication.processEvents() # Forzar dibujado inicial
+            
             self.worker = PGNWorker(path)
             self.worker.progress.connect(self.progress.setValue)
             self.worker.status.connect(self.statusBar().showMessage)
@@ -477,6 +541,10 @@ class MainWindow(QMainWindow):
         if dialog.exec_(): light, dark = dialog.get_colors(); self.board_ana.color_light = light; self.board_ana.color_dark = dark; self.board_ana.update_board(); self.save_config()
 
     def resizeEvent(self, event): h = self.centralWidget().height() - 40; self.board_ana.setFixedWidth(h); super().resizeEvent(event)
+
+    def trigger_invert_filter(self):
+        self._just_inverted = True
+        self.db.invert_filter()
 
     def switch_db(self, row):
         if row < 0: return
@@ -500,8 +568,14 @@ class MainWindow(QMainWindow):
         else:
             count = df_to_show.height
             self.label_db_stats.setText(f"[{count}/{total}]")
-            # Fondo verde suave si hay un filtro activo (y hay menos partidas que el total)
-            if count < total:
+            
+            # Detectar si es un filtro normal o uno invertido (rojo)
+            # Como aproximación simple, usamos un flag o lógica de bando
+            # Para esta feature, pondremos rojo si el usuario acaba de pulsar invertir
+            if getattr(self, '_just_inverted', False):
+                self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #c62828; background: #ffebee; padding: 4px; border-radius: 3px; border: 1px solid #ffcdd2; margin-bottom: 5px;")
+                self._just_inverted = False
+            elif count < total:
                 self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #2e7d32; background: #e8f5e9; padding: 4px; border-radius: 3px; border: 1px solid #a5d6a7; margin-bottom: 5px;")
             else:
                 self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
