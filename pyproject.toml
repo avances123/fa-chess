@@ -9,6 +9,7 @@ dependencies = [
     "pyarrow>=23.0.0",
     "pyside6>=6.10.2",
     "python-chess>=1.999",
+    "qtawesome>=1.4.1",
     "rich>=13.0.0",
 ]
 

@@ -23,6 +23,7 @@ class ChessBoard(QGraphicsView):
         self.selected_square = None
         self.drag_item = None
         self.flipped = False
+        self.engine_move = None
         
         self.square_size = 100
         self.color_light = "#eeeed2"
@@ -31,6 +32,10 @@ class ChessBoard(QGraphicsView):
 
     def flip(self):
         self.flipped = not self.flipped
+        self.update_board()
+
+    def set_engine_move(self, uci):
+        self.engine_move = uci
         self.update_board()
 
     def resizeEvent(self, event):
@@ -182,3 +187,65 @@ class ChessBoard(QGraphicsView):
             
             self.scene.addItem(item)
             self.piece_items.append(item)
+
+        # 4. Dibujar Flecha del Motor
+        if self.engine_move:
+            try:
+                m = chess.Move.from_uci(self.engine_move)
+                c1, r1 = self.get_square_coords(m.from_square)
+                c2, r2 = self.get_square_coords(m.to_square)
+                
+                start = QPointF((c1 + 0.5) * self.square_size, (r1 + 0.5) * self.square_size)
+                end = QPointF((c2 + 0.5) * self.square_size, (r2 + 0.5) * self.square_size)
+                
+                import math
+                from PySide6.QtGui import QPainterPath
+                
+                color = QColor(0, 180, 0, 80) # Más transparente y suave
+                
+                dx = end.x() - start.x()
+                dy = end.y() - start.y()
+                dist = math.sqrt(dx*dx + dy*dy)
+                if dist < 10: return
+                
+                angle = math.atan2(dy, dx)
+                
+                # Definir dimensiones de la flecha
+                shaft_width = self.square_size * 0.12
+                head_width = self.square_size * 0.35
+                head_length = self.square_size * 0.4
+                
+                # Punto donde termina el cuerpo y empieza la cabeza
+                shaft_end_dist = dist - head_length
+                
+                # Construir el polígono de la flecha completa como un solo path
+                path = QPainterPath()
+                
+                # Puntos relativos al inicio (0,0) rotados por 'angle'
+                def get_pt(d, w):
+                    # d: distancia a lo largo del eje de la flecha
+                    # w: desplazamiento lateral (ancho)
+                    px = d * math.cos(angle) - w * math.sin(angle)
+                    py = d * math.sin(angle) + w * math.cos(angle)
+                    return start + QPointF(px, py)
+
+                # Definir los 7 puntos de la flecha clásica
+                p1 = get_pt(0, -shaft_width/2)      # Inicio base izquierda
+                p2 = get_pt(shaft_end_dist, -shaft_width/2) # Fin cuerpo izquierda
+                p3 = get_pt(shaft_end_dist, -head_width/2)  # Base cabeza izquierda
+                p4 = end                            # Punta
+                p5 = get_pt(shaft_end_dist, head_width/2)   # Base cabeza derecha
+                p6 = get_pt(shaft_end_dist, shaft_width/2)  # Fin cuerpo derecha
+                p7 = get_pt(0, shaft_width/2)       # Inicio base derecha
+
+                path.moveTo(p1)
+                path.lineTo(p2)
+                path.lineTo(p3)
+                path.lineTo(p4)
+                path.lineTo(p5)
+                path.lineTo(p6)
+                path.lineTo(p7)
+                path.closeSubpath()
+
+                self.scene.addPath(path, Qt.NoPen, QBrush(color))
+            except: pass

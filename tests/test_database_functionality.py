@@ -22,12 +22,14 @@ def test_database_real_game_flow(app, qtbot):
     # 1. Cargar la base
     app.load_parquet(parquet_path)
     base_name = os.path.basename(parquet_path)
-    assert app.active_db_name == base_name
+    assert app.db.active_db_name == base_name
     assert app.db_table.rowCount() == 1
     
     # 2. Filtrar por jugador negro "yefealvaro"
     app.search_criteria = {"white": "", "black": "yefealvaro", "min_elo": "", "result": "Cualquiera"}
-    app.filter_db(app.search_criteria)
+    filtered = app.db.filter_db(app.db.active_db_name, app.search_criteria)
+    app.refresh_db_list(filtered)
+    
     assert app.db_table.rowCount() == 1
     assert app.db_table.item(0, 3).text() == "yefealvaro"
     
@@ -63,5 +65,5 @@ def test_database_remove_and_stats(app, qtbot):
     app.remove_database(item_base)
     
     # Al estar mockeado el config, ahora sí debería estar vacío y volver a Clipbase
-    assert app.active_db_name == "Clipbase"
+    assert app.db.active_db_name == "Clipbase"
     assert app.label_db_stats.text() == "[0/0]"
