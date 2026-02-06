@@ -111,14 +111,24 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_db, "Gestor Bases")
         db_layout = QHBoxLayout(self.tab_db); db_sidebar = QVBoxLayout()
         self.db_list_widget = QListWidget(); self.db_list_widget.addItem("Clipbase")
+        self.db_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.db_list_widget.currentRowChanged.connect(self.switch_db)
+        self.db_list_widget.customContextMenuRequested.connect(self.on_db_list_context_menu)
         self.progress = QProgressBar(); self.progress.setVisible(False)
         db_sidebar.addWidget(self.db_list_widget)
-        btn_search = QPushButton("🔍 Buscar Partidas")
-        btn_search.clicked.connect(self.open_search)
-        db_sidebar.addWidget(btn_search)
+        
+        self.btn_search = QPushButton("🔍 Filtrar Partidas")
+        self.btn_search.clicked.connect(self.open_search)
+        db_sidebar.addWidget(self.btn_search)
+        
+        self.label_db_stats = QLabel("[0/0]")
+        self.label_db_stats.setAlignment(Qt.AlignCenter)
+        db_sidebar.addWidget(self.label_db_stats)
+        
         db_sidebar.addWidget(self.progress)
         db_layout.addLayout(db_sidebar, 1)
+        
+        self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         
         db_content = QVBoxLayout()
         self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"])
@@ -262,6 +272,31 @@ class MainWindow(QMainWindow):
             
         menu.exec(self.db_table.viewport().mapToGlobal(pos))
 
+    def on_db_list_context_menu(self, pos):
+        item = self.db_list_widget.itemAt(pos)
+        if not item or item.text() == "Clipbase": return
+        
+        menu = QMenu()
+        remove_action = QAction("❌ Quitar de la lista", self)
+        remove_action.triggered.connect(lambda: self.remove_database(item))
+        menu.addAction(remove_action)
+        menu.exec(self.db_list_widget.mapToGlobal(pos))
+
+    def remove_database(self, item):
+        name = item.text()
+        if name in self.dbs: del self.dbs[name]
+        if name in self.db_metadata: del self.db_metadata[name]
+        
+        row = self.db_list_widget.row(item)
+        self.db_list_widget.takeItem(row)
+        
+        # Cambiar a Clipbase si borramos la activa
+        if self.active_db_name == name:
+            self.db_list_widget.setCurrentRow(0)
+            
+        self.save_config()
+        self.statusBar().showMessage(f"Base '{name}' quitada", 2000)
+
     def copy_to_clipbase(self):
         row = self.db_table.currentRow()
         if row >= 0:
@@ -373,12 +408,21 @@ class MainWindow(QMainWindow):
 
     def open_search(self):
         dialog = SearchDialog(self)
+        # Cargar estado previo
+        dialog.white_input.setText(self.search_criteria["white"])
+        dialog.black_input.setText(self.search_criteria["black"])
+        dialog.min_elo_input.setText(self.search_criteria["min_elo"])
+        dialog.result_combo.setCurrentText(self.search_criteria["result"])
+        
         if dialog.exec_():
-            self.filter_db(dialog.get_criteria())
+            self.search_criteria = dialog.get_criteria()
+            self.filter_db(self.search_criteria)
 
     def filter_db(self, c):
         df = self.dbs.get(self.active_db_name)
         if df is None: return
+        
+        total = df.height
         q = df.lazy()
         if c["white"]: q = q.filter(pl.col("white").str.contains(c["white"]))
         if c["black"]: q = q.filter(pl.col("black").str.contains(c["black"]))
@@ -387,11 +431,22 @@ class MainWindow(QMainWindow):
             q = q.filter((pl.col("w_elo") >= m) | (pl.col("b_elo") >= m))
         if c["result"] != "Cualquiera":
             q = q.filter(pl.col("result") == c["result"])
-        self.refresh_db_list(q.collect())
+        
+        filtered_df = q.collect()
+        count = filtered_df.height
+        self.label_db_stats.setText(f"[{count}/{total}]")
+        self.refresh_db_list(filtered_df)
 
     def refresh_db_list(self, df_to_show=None):
         df = df_to_show if df_to_show is not None else self.dbs.get(self.active_db_name)
         if df is None: return
+        
+        # Si no se pasa un DF filtrado (ej: al cambiar de DB), actualizar stats
+        if df_to_show is None:
+            total = df.height
+            self.label_db_stats.setText(f"[{total}/{total}]")
+            self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
+            
         disp = df.head(1000)
         self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
