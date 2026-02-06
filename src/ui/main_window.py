@@ -1,12 +1,15 @@
 import os
 import json
+import time
+from datetime import datetime
 import chess
 import polars as pl
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTableWidget, QTableWidgetItem, QLabel, QPushButton, 
                              QFileDialog, QProgressBar, QHeaderView, QTextBrowser, 
                              QStatusBar, QTabWidget, QLineEdit, QListWidget, QMenu, 
-                             QCheckBox, QColorDialog, QListWidgetItem, QMenuBar, QAbstractItemView)
+                             QCheckBox, QColorDialog, QListWidgetItem, QMenuBar, 
+                             QAbstractItemView, QToolBar, QStyle, QSizePolicy)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor, QFont, QShortcut, QKeySequence
 
@@ -15,6 +18,9 @@ from core.workers import PGNWorker, MaskWorker
 from core.eco import ECOManager
 from ui.board import ChessBoard
 from ui.settings_dialog import SettingsDialog
+from ui.search_dialog import SearchDialog
+from ui.edit_game_dialog import EditGameDialog
+from PySide6.QtWidgets import QMessageBox
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -34,10 +40,13 @@ class MainWindow(QMainWindow):
         self.eco = ECOManager(ECO_FILE)
         
         self.init_clipbase()
+        self.load_config() # Cargar antes de init_ui
         self.init_ui()
         self.init_menu()
         self.init_shortcuts()
-        self.load_config()
+
+        # Inicializar barra de estado
+        self.statusBar().showMessage("Listo")
 
     def init_shortcuts(self):
         # Atajos de flechas para navegación global
@@ -45,6 +54,11 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_Right), self, self.step_forward)
         QShortcut(QKeySequence(Qt.Key_Home), self, self.go_start)
         QShortcut(QKeySequence(Qt.Key_End), self, self.go_end)
+        QShortcut(QKeySequence("F"), self, self.flip_boards)
+
+    def flip_boards(self):
+        self.board_ana.flip()
+        self.board_lab.flip()
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -56,7 +70,23 @@ class MainWindow(QMainWindow):
         self.tab_analysis = QWidget()
         self.tabs.addTab(self.tab_analysis, "Tablero")
         ana_layout = QHBoxLayout(self.tab_analysis); ana_layout.setContentsMargins(0, 0, 0, 0)
-        self.board_ana = ChessBoard(self.board, self); ana_layout.addWidget(self.board_ana)
+        
+        # Contenedor para Tablero + Toolbar
+        board_container = QWidget()
+        board_container_layout = QVBoxLayout(board_container)
+        board_container_layout.setContentsMargins(0,0,0,0)
+        board_container_layout.setSpacing(0)
+        
+        self.toolbar_ana = QToolBar()
+        self.toolbar_ana.setMovable(False)
+        self.setup_toolbar(self.toolbar_ana)
+        board_container_layout.addWidget(self.toolbar_ana)
+        
+        self.board_ana = ChessBoard(self.board, self)
+        self.board_ana.color_light = self.def_light
+        self.board_ana.color_dark = self.def_dark
+        board_container_layout.addWidget(self.board_ana)
+        ana_layout.addWidget(board_container)
         
         panel_ana = QWidget(); p_ana_layout = QVBoxLayout(panel_ana)
         self.label_apertura = QLabel("<b>Apertura:</b> Inicial")
@@ -67,13 +97,13 @@ class MainWindow(QMainWindow):
         self.tree_ana.cellClicked.connect(self.on_tree_cell_click)
         p_ana_layout.addWidget(self.tree_ana)
         
-        nav_box = QHBoxLayout()
-        for label, func in [("|<", self.go_start), ("<", self.step_back), (">", self.step_forward), (">|", self.go_end)]:
-            btn = QPushButton(label); btn.clicked.connect(func); nav_box.addWidget(btn)
-        p_ana_layout.addLayout(nav_box)
-        
         self.hist_ana = QTextBrowser(); self.hist_ana.setOpenLinks(False)
         self.hist_ana.anchorClicked.connect(self.jump_to_move); p_ana_layout.addWidget(self.hist_ana)
+        
+        btn_save = QPushButton("💾 Guardar Partida en Clipbase")
+        btn_save.clicked.connect(self.add_to_clipbase)
+        p_ana_layout.addWidget(btn_save)
+
         ana_layout.addWidget(panel_ana, 1)
 
         # --- TAB 2: GESTOR ---
@@ -83,19 +113,42 @@ class MainWindow(QMainWindow):
         self.db_list_widget = QListWidget(); self.db_list_widget.addItem("Clipbase")
         self.db_list_widget.currentRowChanged.connect(self.switch_db)
         self.progress = QProgressBar(); self.progress.setVisible(False)
-        db_sidebar.addWidget(self.db_list_widget); db_sidebar.addWidget(self.progress); db_layout.addLayout(db_sidebar, 1)
+        db_sidebar.addWidget(self.db_list_widget)
+        btn_search = QPushButton("🔍 Buscar Partidas")
+        btn_search.clicked.connect(self.open_search)
+        db_sidebar.addWidget(btn_search)
+        db_sidebar.addWidget(self.progress)
+        db_layout.addLayout(db_sidebar, 1)
         
         db_content = QVBoxLayout()
         self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"])
         self.db_table.setFont(table_font)
         self.db_table.itemDoubleClicked.connect(self.load_game_from_list)
+        self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
         db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
 
         # --- TAB 3: LABORATORIO ---
         self.tab_lab = QWidget()
         self.tabs.addTab(self.tab_lab, "Laboratorio")
         lab_layout = QHBoxLayout(self.tab_lab); lab_layout.setContentsMargins(0, 0, 0, 0)
-        self.board_lab = ChessBoard(self.board, self); lab_layout.addWidget(self.board_lab)
+        
+        # Contenedor para Tablero + Toolbar
+        lab_board_container = QWidget()
+        lab_board_container_layout = QVBoxLayout(lab_board_container)
+        lab_board_container_layout.setContentsMargins(0,0,0,0)
+        lab_board_container_layout.setSpacing(0)
+        
+        self.toolbar_lab = QToolBar()
+        self.toolbar_lab.setMovable(False)
+        self.setup_toolbar(self.toolbar_lab)
+        lab_board_container_layout.addWidget(self.toolbar_lab)
+        
+        self.board_lab = ChessBoard(self.board, self)
+        self.board_lab.color_light = self.def_light
+        self.board_lab.color_dark = self.def_dark
+        lab_board_container_layout.addWidget(self.board_lab)
+        lab_layout.addWidget(lab_board_container)
+        
         panel_lab = QWidget(); p_lab_layout = QVBoxLayout(panel_lab)
         
         self.label_apertura_lab = QLabel("<b>Apertura:</b> Inicial")
@@ -116,17 +169,161 @@ class MainWindow(QMainWindow):
         p_lab_layout.addLayout(mask_btns)
         lab_layout.addWidget(panel_lab, 1)
 
+        # Cargar DBs que quedaron pendientes del config
+        for path in getattr(self, 'pending_dbs', []):
+            if os.path.exists(path): self.load_parquet(path)
+
     def create_scid_table(self, headers):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(22)
         table.horizontalHeader().setHighlightSections(False)
         table.setShowGrid(True)
         table.setStyleSheet("QHeaderView::section { font-weight: bold; }")
         return table
+
+    def setup_toolbar(self, toolbar):
+        style = self.style()
+        
+        # Espaciador izquierdo
+        left_spacer = QWidget()
+        left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(left_spacer)
+
+        actions = [
+            (style.standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward), self.go_start, "Inicio (Home)"),
+            (style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), self.step_back, "Anterior (Izquierda)"),
+            (style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), self.step_forward, "Siguiente (Derecha)"),
+            (style.standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward), self.go_end, "Final (End)"),
+            (None, None, None), # Separador
+            (style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), self.flip_boards, "Girar Tablero (F)"),
+        ]
+        
+        for icon, func, tip in actions:
+            if icon is None:
+                toolbar.addSeparator()
+            else:
+                action = toolbar.addAction(icon, "")
+                action.triggered.connect(func)
+                action.setToolTip(tip)
+
+        # Espaciador derecho
+        right_spacer = QWidget()
+        right_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(right_spacer)
+
+    def add_to_clipbase(self):
+        line_uci = " ".join([m.uci() for m in self.full_mainline])
+        game_data = {
+            "id": int(time.time()), 
+            "white": "Jugador Blanco", "black": "Jugador Negro",
+            "w_elo": 2500, "b_elo": 2500, "result": "*", 
+            "date": datetime.now().strftime("%Y.%m.%d"),
+            "event": "Análisis Local", 
+            "line": line_uci, "full_line": line_uci
+        }
+        self.dbs["Clipbase"] = pl.concat([self.dbs["Clipbase"], pl.DataFrame([game_data])])
+        self.statusBar().showMessage("Partida guardada en Clipbase", 3000)
+        if self.active_db_name == "Clipbase":
+            self.refresh_db_list()
+
+    def delete_selected_game(self):
+        row = self.db_table.currentRow()
+        if row >= 0:
+            game_id = self.db_table.item(row, 0).data(Qt.UserRole)
+            self.dbs[self.active_db_name] = self.dbs[self.active_db_name].filter(pl.col("id") != game_id)
+            self.refresh_db_list()
+            self.statusBar().showMessage("Partida eliminada", 2000)
+
+    def on_db_table_context_menu(self, pos):
+        menu = QMenu()
+        
+        # Opción para copiar a Clipbase
+        copy_action = QAction("📋 Copiar a Clipbase", self)
+        copy_action.triggered.connect(self.copy_to_clipbase)
+        menu.addAction(copy_action)
+        
+        # Opción para editar (solo si hay una fila seleccionada)
+        edit_action = QAction("📝 Editar Datos Partida", self)
+        edit_action.triggered.connect(self.edit_selected_game)
+        menu.addAction(edit_action)
+
+        # Eliminar solo si no es de solo lectura o es Clipbase
+        is_readonly = self.db_metadata.get(self.active_db_name, {}).get("read_only", True)
+        if not is_readonly or self.active_db_name == "Clipbase":
+            menu.addSeparator()
+            del_action = QAction("❌ Eliminar Partida", self)
+            del_action.triggered.connect(self.delete_selected_game)
+            menu.addAction(del_action)
+            
+        menu.exec(self.db_table.viewport().mapToGlobal(pos))
+
+    def copy_to_clipbase(self):
+        row = self.db_table.currentRow()
+        if row >= 0:
+            game_id = self.db_table.item(row, 0).data(Qt.UserRole)
+            game_df = self.dbs[self.active_db_name].filter(pl.col("id") == game_id)
+            if not game_df.is_empty():
+                # Forzar el esquema de Clipbase para evitar errores de tipo
+                new_game = game_df.with_columns([
+                    pl.lit(int(time.time() * 1000)).alias("id") # ID único basado en ms
+                ]).select(self.dbs["Clipbase"].columns)
+                
+                self.dbs["Clipbase"] = pl.concat([self.dbs["Clipbase"], new_game])
+                self.statusBar().showMessage("Partida copiada a Clipbase", 2000)
+                if self.active_db_name == "Clipbase": self.refresh_db_list()
+
+    def edit_selected_game(self):
+        row = self.db_table.currentRow()
+        if row < 0: return
+        
+        game_id = self.db_table.item(row, 0).data(Qt.UserRole)
+        is_readonly = self.db_metadata.get(self.active_db_name, {}).get("read_only", True)
+        
+        # Si es de solo lectura, proponemos copiar a Clipbase
+        target_db = self.active_db_name
+        if is_readonly and self.active_db_name != "Clipbase":
+            ret = QMessageBox.question(self, "Base de Solo Lectura", 
+                "Esta base es de solo lectura. ¿Deseas copiar esta partida a la Clipbase para editarla?",
+                QMessageBox.Yes | QMessageBox.No)
+            if ret == QMessageBox.Yes:
+                self.copy_to_clipbase()
+                self.active_db_name = "Clipbase"
+                # Actualizar selección a la última de Clipbase
+                self.refresh_db_list()
+                row = self.db_table.rowCount() - 1
+                game_id = self.db_table.item(row, 0).data(Qt.UserRole)
+                target_db = "Clipbase"
+            else: return
+
+        # Obtener datos actuales
+        current_row = self.dbs[target_db].filter(pl.col("id") == game_id).row(0, named=True)
+        dialog = EditGameDialog(current_row, self)
+        if dialog.exec_():
+            new_data = dialog.get_data()
+            # Actualizar el DataFrame de Polars
+            self.dbs[target_db] = self.dbs[target_db].with_columns([
+                pl.when(pl.col("id") == game_id).then(pl.lit(new_data[k])).otherwise(pl.col(k)).alias(k)
+                for k in new_data.keys()
+            ])
+            self.refresh_db_list()
+            self.statusBar().showMessage("Partida actualizada", 2000)
+
+    def load_parquet(self, path):
+        self.progress.setVisible(False)
+        name = os.path.basename(path)
+        self.dbs[name] = pl.read_parquet(path)
+        # Por defecto, bases cargadas son de solo lectura
+        self.db_metadata[name] = {"read_only": True, "path": path}
+        if not self.db_list_widget.findItems(name, Qt.MatchExactly):
+            self.db_list_widget.addItem(name)
+        self.db_list_widget.setCurrentRow(self.db_list_widget.count()-1)
+        self.save_config()
+        self.refresh_db_list()
 
     def init_menu(self):
         menubar = self.menuBar()
@@ -174,14 +371,37 @@ class MainWindow(QMainWindow):
         if row < 0: return
         self.active_db_name = self.db_list_widget.item(row).text(); self.refresh_db_list(); self.update_stats()
 
-    def refresh_db_list(self):
+    def open_search(self):
+        dialog = SearchDialog(self)
+        if dialog.exec_():
+            self.filter_db(dialog.get_criteria())
+
+    def filter_db(self, c):
         df = self.dbs.get(self.active_db_name)
+        if df is None: return
+        q = df.lazy()
+        if c["white"]: q = q.filter(pl.col("white").str.contains(c["white"]))
+        if c["black"]: q = q.filter(pl.col("black").str.contains(c["black"]))
+        if c["min_elo"].isdigit():
+            m = int(c["min_elo"])
+            q = q.filter((pl.col("w_elo") >= m) | (pl.col("b_elo") >= m))
+        if c["result"] != "Cualquiera":
+            q = q.filter(pl.col("result") == c["result"])
+        self.refresh_db_list(q.collect())
+
+    def refresh_db_list(self, df_to_show=None):
+        df = df_to_show if df_to_show is not None else self.dbs.get(self.active_db_name)
         if df is None: return
         disp = df.head(1000)
         self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
-            self.db_table.setItem(i, 0, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 1, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 2, QTableWidgetItem(str(r["w_elo"])))
-            self.db_table.setItem(i, 3, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 4, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 5, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
+            self.db_table.setItem(i, 0, QTableWidgetItem(r["date"]))
+            self.db_table.setItem(i, 1, QTableWidgetItem(r["white"]))
+            self.db_table.setItem(i, 2, QTableWidgetItem(str(r["w_elo"])))
+            self.db_table.setItem(i, 3, QTableWidgetItem(r["black"]))
+            self.db_table.setItem(i, 4, QTableWidgetItem(str(r["b_elo"])))
+            self.db_table.setItem(i, 5, QTableWidgetItem(r["result"]))
+            self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
         self.db_table.resizeColumnsToContents()
 
     def load_game_from_list(self, item):
@@ -253,24 +473,32 @@ class MainWindow(QMainWindow):
             self.mask_list.takeItem(self.mask_list.row(curr)); self.update_stats()
 
     def save_config(self):
-        dbs_info = [m for m in self.db_metadata.values() if m.get("path")]
-        colors = {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark}
+        dbs_info = [{"path": m["path"]} for m in self.db_metadata.values() if m.get("path")]
+        # Usar colores actuales de los tableros si existen, si no los por defecto
+        light = getattr(self, 'board_ana', None)
+        colors = {
+            "light": self.board_ana.color_light if hasattr(self, 'board_ana') else "#eeeed2",
+            "dark": self.board_ana.color_dark if hasattr(self, 'board_ana') else "#8ca2ad"
+        }
         config = {"dbs": dbs_info, "colors": colors}
         with open(CONFIG_FILE, "w") as f: json.dump(config, f)
 
     def load_config(self):
+        # Valores por defecto
+        self.def_light = "#eeeed2"
+        self.def_dark = "#8ca2ad"
+        
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 try:
                     data = json.load(f)
-                    for info in data.get("dbs", []):
-                        path = info["path"] if isinstance(info, dict) else info
-                        if os.path.exists(path): self.load_parquet(path)
+                    # Guardamos las rutas de DBs para cargarlas luego en init_ui o similar
+                    self.pending_dbs = [info["path"] if isinstance(info, dict) else info for info in data.get("dbs", [])]
+                    
                     colors = data.get("colors")
                     if colors:
-                        self.board_ana.color_light = self.board_lab.color_light = colors["light"]
-                        self.board_ana.color_dark = self.board_lab.color_dark = colors["dark"]
-                        self.board_ana.update_board(); self.board_lab.update_board()
+                        self.def_light = colors.get("light", self.def_light)
+                        self.def_dark = colors.get("dark", self.def_dark)
                 except: pass
 
     def update_stats(self):
