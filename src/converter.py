@@ -44,7 +44,7 @@ def extract_game_data(count, game):
         "event": headers.get("Event", "?"),
         "line": " ".join(uci_moves[:12]),
         "full_line": " ".join(uci_moves),
-        "fens": hashes # Ahora guardamos una lista de enteros Int64
+        "fens": hashes # Ahora guardamos una lista de enteros UInt64
     }
 
 def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
@@ -56,6 +56,14 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
     total_to_process = min(real_total, max_games)
     
     games_data = []
+    
+    # Pre-compilar el bando seguro para Elos
+    def safe_int(val):
+        if not val: return 0
+        try:
+            clean_val = "".join(filter(str.isdigit, str(val)))
+            return int(clean_val) if clean_val else 0
+        except: return 0
 
     with Progress(
         SpinnerColumn(),

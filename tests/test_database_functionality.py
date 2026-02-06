@@ -28,7 +28,8 @@ def test_database_real_game_flow(app, qtbot):
     
     # 2. Filtrar por jugador negro "yefealvaro"
     app.search_criteria = {"white": "", "black": "yefealvaro", "min_elo": "", "result": "Cualquiera"}
-    filtered = app.db.filter_db(app.db.active_db_name, app.search_criteria)
+    # Tras el refactor, filter_db toma solo los criterios, el nombre de la DB es interno
+    filtered = app.db.filter_db(app.search_criteria)
     app.refresh_db_list(filtered)
     
     assert app.db_table.rowCount() == 1
@@ -40,17 +41,17 @@ def test_database_real_game_flow(app, qtbot):
     
     # Verificar estado del tablero tras carga
     assert app.tabs.currentIndex() == 0
-    assert len(app.full_mainline) >= 4
-    assert app.current_idx == 0 
-    assert app.board.fen() == chess.Board().fen()
+    assert len(app.game.full_mainline) >= 4
+    assert app.game.current_idx == 0 
+    assert app.game.board.fen() == chess.Board().fen()
     
     # Avanzar unas jugadas y verificar FEN
     for _ in range(4): # 1. e4 b6 2. d4 Bb7
-        app.step_forward()
+        app.game.step_forward()
     
     # Tras 2. d4 Bb7
     expected_fen_prefix = "rn1qkbnr/pbpppppp/1p6/8/3PP3/8/PPP2PPP/RNBQKBNR"
-    assert app.board.fen().startswith(expected_fen_prefix)
+    assert app.game.board.fen().startswith(expected_fen_prefix)
 
 def test_database_remove_and_stats(app, qtbot):
     parquet_path = os.path.abspath("tests/data/real_sample.parquet")
@@ -74,7 +75,7 @@ def test_clear_filter_button(app, qtbot):
     
     # 1. Aplicar un filtro (ej: buscar alguien que NO existe)
     app.search_criteria = {"white": "Inexistente", "black": "", "min_elo": "", "result": "Cualquiera"}
-    filtered = app.db.filter_db(app.db.active_db_name, app.search_criteria)
+    filtered = app.db.filter_db(app.search_criteria)
     app.refresh_db_list(filtered)
     
     assert app.db_table.rowCount() == 0

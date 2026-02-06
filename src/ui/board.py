@@ -52,9 +52,9 @@ class ChessBoard(QGraphicsView):
 
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
-            self.parent_main.step_back()
+            self.parent_main.game.step_back()
         else:
-            self.parent_main.step_forward()
+            self.parent_main.game.step_forward()
 
     def get_square(self, pos):
         c = int(pos.x() // self.square_size)
@@ -119,7 +119,7 @@ class ChessBoard(QGraphicsView):
                         move.promotion = self.select_promotion_piece()
 
                 if move in self.board.legal_moves:
-                    self.parent_main.make_move(move)
+                    self.parent_main.game.make_move(move)
             
             self.selected_square = None
             self.drag_item = None
