@@ -24,10 +24,11 @@ from ui.settings_dialog import SettingsDialog
 from ui.search_dialog import SearchDialog
 from ui.edit_game_dialog import EditGameDialog
 from ui.widgets.results_bar import ResultsWidget
+from ui.widgets.eval_graph import EvaluationGraph
 from ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
                        STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
                        STYLE_BADGE_ERROR)
-from core.engine_worker import EngineWorker
+from core.engine_worker import EngineWorker, FullAnalysisWorker
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -39,6 +40,8 @@ class MainWindow(QMainWindow):
         self.db = DBManager()
         self.game = GameController()
         self.eco = ECOManager(ECO_FILE)
+        
+        self.game_evals = [] # Almacenar evaluaciones de la partida actual
         
         # Conectar señales del controlador de juego
         self.game.position_changed.connect(self.update_ui)
@@ -122,8 +125,43 @@ class MainWindow(QMainWindow):
         self.tree_ana.setFont(table_font); self.tree_ana.itemDoubleClicked.connect(self.on_tree_cell_double_click); self.tree_ana.itemClicked.connect(self.on_tree_cell_click)
         self.tree_ana.setMouseTracking(True); self.tree_ana.cellEntered.connect(self.on_tree_cell_hover); p_ana_layout.addWidget(self.tree_ana)
         
-        self.hist_ana = QTextBrowser(); self.hist_ana.setOpenLinks(False); self.hist_ana.anchorClicked.connect(self.jump_to_move_link); p_ana_layout.addWidget(self.hist_ana)
-        btn_save = QPushButton("💾 Guardar Partida en Clipbase"); btn_save.clicked.connect(self.add_to_clipbase); p_ana_layout.addWidget(btn_save)
+        # Panel de Pestañas (Notación / Gráfico)
+        self.tabs_side = QTabWidget()
+        
+        # Pestaña 1: Notación
+        # Panel de Pestañas (Notación / Gráfico)
+        self.tabs_side = QTabWidget()
+        
+        # Pestaña 1: Notación
+        tab_notacion = QWidget()
+        layout_notacion = QVBoxLayout(tab_notacion)
+        layout_notacion.setContentsMargins(0,0,0,0)
+        
+        self.hist_ana = QTextBrowser(); self.hist_ana.setOpenLinks(False); self.hist_ana.anchorClicked.connect(self.jump_to_move_link)
+        layout_notacion.addWidget(self.hist_ana)
+        
+        btn_save = QPushButton(qta.icon('fa5s.save'), " Guardar en Base")
+        btn_save.clicked.connect(self.add_to_clipbase)
+        layout_notacion.addWidget(btn_save)
+        
+        self.tabs_side.addTab(tab_notacion, qta.icon('fa5s.list-ol'), "Notación")
+        
+        # Pestaña 2: Gráfico
+        tab_grafico = QWidget()
+        layout_grafico = QVBoxLayout(tab_grafico)
+        layout_grafico.setContentsMargins(0,0,0,0)
+        
+        self.eval_graph = EvaluationGraph()
+        self.eval_graph.move_selected.connect(self.game.jump_to_move) 
+        layout_grafico.addWidget(self.eval_graph)
+        
+        btn_analyze = QPushButton(qta.icon('fa5s.magic'), " Analizar Partida Completa")
+        btn_analyze.clicked.connect(self.start_full_analysis)
+        layout_grafico.addWidget(btn_analyze)
+        
+        self.tabs_side.addTab(tab_grafico, qta.icon('fa5s.chart-area'), "Gráfico")
+        
+        p_ana_layout.addWidget(self.tabs_side)
         ana_layout.addWidget(panel_ana, 1)
 
         # --- TAB 2: GESTOR ---
@@ -196,6 +234,45 @@ class MainWindow(QMainWindow):
         for path in getattr(self, 'pending_dbs', []):
             if os.path.exists(path): self.load_parquet(path)
 
+    def start_full_analysis(self):
+        # Detener motor principal si está corriendo
+        if self.action_engine.isChecked():
+            self.action_engine.toggle()
+            self.toggle_engine(False)
+            
+        # Bloquear interacción para evitar crashes
+        self.board_ana.setEnabled(False)
+        self.tree_ana.setEnabled(False)
+            
+        # Preparar UI
+        self.progress.setValue(0)
+        self.progress.show()
+        
+        # Inicializar array de evaluaciones si es necesario
+        total_moves = len(self.game.full_mainline) + 1
+        self.game_evals = [0] * total_moves
+        self.eval_graph.set_evaluations(self.game_evals)
+        
+        # Iniciar Worker
+        self.analysis_worker = FullAnalysisWorker(self.game.full_mainline)
+        self.analysis_worker.progress.connect(lambda curr, total: self.progress.setValue(int((curr/total)*100)))
+        self.analysis_worker.analysis_result.connect(self.on_analysis_update)
+        self.analysis_worker.finished.connect(self.on_analysis_finished)
+        self.analysis_worker.error_occurred.connect(lambda msg: QMessageBox.critical(self, "Error de Análisis", msg))
+        self.analysis_worker.start()
+        self.statusBar().showMessage("Analizando partida completa...", 5000)
+
+    def on_analysis_update(self, idx, cp_score):
+        if 0 <= idx < len(self.game_evals):
+            self.game_evals[idx] = cp_score
+            self.eval_graph.set_evaluations(self.game_evals)
+
+    def on_analysis_finished(self):
+        self.progress.hide()
+        self.board_ana.setEnabled(True)
+        self.tree_ana.setEnabled(True)
+        self.statusBar().showMessage("Análisis completo finalizado", 3000)
+
     def toggle_engine(self, checked):
         self.eval_bar.setVisible(checked)
         if checked:
@@ -211,9 +288,20 @@ class MainWindow(QMainWindow):
             self.board_ana.set_engine_move(best_move if best_move else None)
             
         try:
-            if "M" in eval_str: val = 1000 if "+" in eval_str or eval_str[0].isdigit() or (eval_str.startswith("M") and not eval_str.startswith("-M")) else -1000
-            else: val = int(float(eval_str) * 100)
+            if "M" in eval_str: 
+                val = 1000 if "+" in eval_str or eval_str[0].isdigit() or (eval_str.startswith("M") and not eval_str.startswith("-M")) else -1000
+                cp_val = 2000 if val > 0 else -2000 # Valor alto para mate en gráfica
+            else: 
+                val = int(float(eval_str) * 100)
+                cp_val = int(float(eval_str) * 100)
+            
             self.eval_bar.setValue(val)
+            
+            # Guardar en el histórico para la gráfica
+            if 0 <= self.game.current_idx < len(self.game_evals):
+                self.game_evals[self.game.current_idx] = cp_val
+                self.eval_graph.set_evaluations(self.game_evals) # Redibujar gráfica en vivo
+                
         except: pass
 
     def closeEvent(self, event):
@@ -590,6 +678,22 @@ class MainWindow(QMainWindow):
 
     def update_ui(self):
         self.tree_ana.clearSelection(); self.board_ana.set_hover_move(None); self.board_ana.update_board(); self.update_stats()
+        
+        # Sincronizar evaluaciones con la longitud de la partida
+        current_len = len(self.game.full_mainline)
+        if len(self.game_evals) != current_len + 1: # +1 por posición inicial
+            # Si cambia la longitud (nueva partida o variante), reseteamos o ajustamos
+            # Por simplicidad, si es muy distinto, reseteamos. Idealmente conservaríamos lo común.
+            if abs(len(self.game_evals) - (current_len + 1)) > 1:
+                self.game_evals = [None] * (current_len + 1)
+            elif len(self.game_evals) < current_len + 1:
+                self.game_evals.extend([None] * (current_len + 1 - len(self.game_evals)))
+            else:
+                self.game_evals = self.game_evals[:current_len + 1]
+        
+        self.eval_graph.set_evaluations(self.game_evals)
+        self.eval_graph.set_current_move(self.game.current_idx)
+
         if hasattr(self, 'engine_worker') and self.engine_worker.isRunning(): self.engine_worker.update_position(self.game.board.fen())
         temp = chess.Board(); html = "<style>a { text-decoration: none; color: #222; } .active { background-color: #f6f669; }</style>"
         for i, m in enumerate(self.game.full_mainline):

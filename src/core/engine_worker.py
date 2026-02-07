@@ -77,3 +77,68 @@ class EngineWorker(QThread):
         if turn == chess.BLACK:
             cp = -cp
         return f"{cp/100:+.2f}"
+
+class FullAnalysisWorker(QThread):
+    progress = Signal(int, int) # current_move, total_moves
+    analysis_result = Signal(int, int) # move_idx, cp_score
+    finished = Signal()
+    error_occurred = Signal(str) # Nueva señal de error
+
+    def __init__(self, moves, depth=10):
+        super().__init__()
+        self.moves = moves
+        self.depth = depth
+        self.running = True
+
+    def run(self):
+        try:
+            import shutil
+            # Búsqueda robusta del motor
+            engine_path = shutil.which("stockfish")
+            if not engine_path:
+                for p in ["/usr/games/stockfish", "/usr/bin/stockfish", "/usr/local/bin/stockfish"]:
+                    if os.path.exists(p):
+                        engine_path = p
+                        break
+            
+            if not engine_path:
+                self.error_occurred.emit("No se encontró el ejecutable de Stockfish. Asegúrate de tenerlo instalado.")
+                return
+
+            engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+            
+            board = chess.Board()
+            # Analizar posición inicial (índice 0)
+            self.analyze_position(engine, board, 0)
+            
+            for i, move in enumerate(self.moves):
+                if not self.running: break
+                board.push(move)
+                # Analizar tras el movimiento (índice i+1)
+                self.analyze_position(engine, board, i + 1)
+                self.progress.emit(i + 1, len(self.moves))
+            
+            engine.quit()
+        except Exception as e:
+            self.error_occurred.emit(f"Error crítico durante el análisis: {str(e)}")
+        finally:
+            self.finished.emit()
+
+    def analyze_position(self, engine, board, idx):
+        try:
+            # Análisis rápido por profundidad
+            info = engine.analyse(board, chess.engine.Limit(depth=self.depth))
+            score_obj = info.get("score")
+            
+            if score_obj:
+                score = score_obj.white()
+                if score.is_mate():
+                    val = 2000 if score.mate() > 0 else -2000
+                else:
+                    val = score.score()
+                self.analysis_result.emit(idx, val)
+        except:
+            self.analysis_result.emit(idx, 0)
+
+    def stop(self):
+        self.running = False
