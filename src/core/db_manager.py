@@ -23,6 +23,14 @@ class DBManager(QObject):
         self.db_metadata = {}
         self.active_db_name = "Clipbase"
         self.current_filter_df = None # Estado del filtro actual
+        
+        # Caché de estadísticas de transposición
+        self.stats_cache = {} 
+        self.MAX_CACHE_SIZE = 100
+        
+        # Índice de árbol activo (DataFrame resumen)
+        self.current_tree = None
+        
         self.init_clipbase()
 
     def init_clipbase(self):
@@ -87,15 +95,62 @@ class DBManager(QObject):
         self.db_metadata[name] = {"read_only": True, "path": path}
         self.active_db_name = name
         self.current_filter_df = None # Reset filtro al cargar base
+        
+        # Intentar cargar árbol asociado
+        self.load_tree(path)
+        
         self.database_loaded.emit(name)
         self.active_db_changed.emit(name)
         return name
 
+    def load_tree(self, db_path):
+        """Carga el índice de árbol (.tree.parquet) en modo Lazy"""
+        self.current_tree = None
+        self.stats_cache.clear() # Limpiar caché para forzar uso del nuevo árbol
+        if not db_path: return
+        
+        tree_path = db_path.replace(".parquet", ".tree.parquet")
+        if os.path.exists(tree_path):
+            try:
+                # Mantenemos solo el plan de escaneo, no cargamos datos en RAM
+                self.current_tree = pl.scan_parquet(tree_path)
+                print(f"Índice de árbol conectado (Lazy): {tree_path}")
+            except Exception as e:
+                print(f"Error conectando árbol: {e}")
+
+    def get_stats_from_tree(self, pos_hash):
+        """Consulta instantánea al índice del árbol"""
+        if self.current_tree is None: return None
+        
+        # Solo consultamos el árbol si NO hay filtro activo 
+        if self.current_filter_df is not None: return None
+        
+        try:
+            target = int(pos_hash)
+            # Filtramos en el LazyFrame y SOLO recolectamos la fila necesaria
+            res = self.current_tree.filter(pl.col("hash") == pl.lit(target, dtype=pl.UInt64)).collect()
+            return res if res.height > 0 else None
+        except:
+            return None
+
+    def get_current_view(self):
+        """Devuelve el DataFrame filtrado actual o la base completa"""
+        if self.current_filter_df is not None:
+            return self.current_filter_df
+        return self.get_active_df()
+
     def set_active_db(self, name):
         if name in self.dbs:
             self.active_db_name = name
-            self.current_filter_df = None # Reset filtro al cambiar base
+            self.current_filter_df = None
+            self.stats_cache.clear() # Limpiar caché al cambiar de base
+            
+            # Recargar árbol de esta base
+            path = self.db_metadata.get(name, {}).get("path")
+            self.load_tree(path)
+            
             self.active_db_changed.emit(name)
+            self.filter_updated.emit(self.get_active_df())
 
     def remove_database(self, name):
         if name == "Clipbase": return False
@@ -117,7 +172,8 @@ class DBManager(QObject):
         
         if criteria.get("position_hash"):
             if "fens" in df.columns:
-                q = q.filter(pl.col("fens").list.contains(criteria["position_hash"]))
+                target = int(criteria["position_hash"])
+                q = q.filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64)))
 
         min_elo = criteria.get("min_elo")
         if min_elo and str(min_elo).isdigit():
@@ -129,6 +185,7 @@ class DBManager(QObject):
             q = q.filter(pl.col("result") == result)
             
         self.current_filter_df = q.collect()
+        self.stats_cache.clear() # ¡CRÍTICO! Limpiar caché al cambiar filtro
         self.filter_updated.emit(self.current_filter_df)
         return self.current_filter_df
 
@@ -145,46 +202,44 @@ class DBManager(QObject):
             current_ids = self.current_filter_df.select("id")
             self.current_filter_df = df_active.filter(~pl.col("id").is_in(current_ids["id"]))
             
+        self.stats_cache.clear() # Limpiar caché al invertir
         self.filter_updated.emit(self.current_filter_df)
         return self.current_filter_df
 
+    def get_cached_stats(self, pos_hash):
+        return self.stats_cache.get(pos_hash)
+
+    def cache_stats(self, pos_hash, stats_df):
+        if len(self.stats_cache) >= self.MAX_CACHE_SIZE:
+            # Eliminar un elemento arbitrario (política simple)
+            self.stats_cache.pop(next(iter(self.stats_cache)))
+        self.stats_cache[pos_hash] = stats_df
+
     def get_stats_for_position(self, line_uci, is_white):
-        # USAR FILTRO SI EXISTE, SI NO TODA LA BASE
-        df = self.current_filter_df if self.current_filter_df is not None else self.get_active_df()
-        
-        if df is None: return None
-        try:
-            res = df.lazy().filter(pl.col("line").str.starts_with(line_uci)).select([
-                pl.col("line").str.slice(len(line_uci)).str.strip_chars().str.split(" ").list.get(0).alias("uci"),
-                pl.col("result"), pl.col("w_elo"), pl.col("b_elo")
-            ]).filter(pl.col("uci").is_not_null() & (pl.col("uci") != "")).group_by("uci").agg([
-                pl.len().alias("c"),
-                pl.col("result").filter(pl.col("result") == "1-0").count().alias("w"),
-                pl.col("result").filter(pl.col("result") == "0-1").count().alias("b"),
-                pl.col("result").filter(pl.col("result") == "1/2-1/2").count().alias("d"),
-                pl.col("w_elo").mean().alias("avg_w_elo"),
-                pl.col("b_elo").mean().alias("avg_b_elo")
-            ]).sort("c", descending=True).limit(15).collect()
-            return res
-        except: return None
+        # Mantenido por compatibilidad, pero StatsWorker ya no lo usa directamente
+        pass
 
     def get_active_df(self): return self.dbs.get(self.active_db_name)
+    
     def add_to_clipbase(self, game_data): 
         schema = self.dbs["Clipbase"].schema
         self.dbs["Clipbase"] = pl.concat([self.dbs["Clipbase"], pl.DataFrame([game_data], schema=schema)])
         if self.active_db_name == "Clipbase": self.current_filter_df = None
+        
     def delete_game(self, db_name, game_id):
         if db_name in self.dbs: 
             self.dbs[db_name] = self.dbs[db_name].filter(pl.col("id") != game_id)
             if self.active_db_name == db_name: self.current_filter_df = None
             return True
         return False
+        
     def update_game(self, db_name, game_id, new_data):
         if db_name in self.dbs:
             self.dbs[db_name] = self.dbs[db_name].with_columns([pl.when(pl.col("id") == game_id).then(pl.lit(new_data[k])).otherwise(pl.col(k)).alias(k) for k in new_data.keys()])
             if self.active_db_name == db_name: self.current_filter_df = None
             return True
         return False
+        
     def get_game_by_id(self, db_name, game_id):
         df = self.dbs.get(db_name)
         if df is not None:

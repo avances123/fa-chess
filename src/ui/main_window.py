@@ -14,6 +14,17 @@ from PySide6.QtCore import Qt, QPointF, QTimer
 from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QColor, QBrush
 import qtawesome as qta
 
+class SortableWidgetItem(QTableWidgetItem):
+    """Permite ordenar por un valor numérico oculto en lugar del texto formateado"""
+    def __lt__(self, other):
+        try:
+            v1 = self.data(Qt.UserRole)
+            v2 = other.data(Qt.UserRole)
+            if v1 is not None and v2 is not None:
+                return float(v1) < float(v2)
+        except: pass
+        return super().__lt__(other)
+
 from config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
 from core.workers import PGNWorker, StatsWorker, PGNExportWorker
 from core.eco import ECOManager
@@ -124,7 +135,12 @@ class MainWindow(QMainWindow):
         
         panel_ana = QWidget(); p_ana_layout = QVBoxLayout(panel_ana)
         info_box = QWidget(); info_layout = QHBoxLayout(info_box); info_layout.setContentsMargins(0, 0, 0, 0)
-        self.label_apertura = QLabel("<b>Apertura:</b> Inicial"); self.label_eval = QLabel(""); self.label_eval.setStyleSheet(STYLE_LABEL_EVAL)
+        self.label_apertura = QLabel("<b>Apertura:</b> Inicial")
+        self.label_apertura.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
+        self.label_apertura.linkActivated.connect(self.on_opening_label_link)
+        
+        self.label_eval = QLabel("")
+        self.label_eval.setStyleSheet(STYLE_LABEL_EVAL)
         info_layout.addWidget(self.label_apertura, 1); info_layout.addWidget(self.label_eval); p_ana_layout.addWidget(info_box)
         
         self.tree_ana = self.create_scid_table(["Movim.", "Frec.", "Barra", "Win %", "AvElo", "Perf"])
@@ -261,6 +277,7 @@ class MainWindow(QMainWindow):
         self.tree_ana.setEnabled(False)
             
         # Preparar UI
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.show()
         
@@ -562,6 +579,12 @@ class MainWindow(QMainWindow):
 
         db_menu.addSeparator()
         
+        build_tree_action = QAction(qta.icon('fa5s.sitemap'), "&Generar Árbol de Aperturas...", self)
+        build_tree_action.triggered.connect(self.build_opening_tree)
+        db_menu.addAction(build_tree_action)
+
+        db_menu.addSeparator()
+        
         delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self)
         delete_db_action.triggered.connect(self.delete_current_db_file)
         db_menu.addAction(delete_db_action)
@@ -606,6 +629,40 @@ class MainWindow(QMainWindow):
                 else:
                     QMessageBox.critical(self, "Error", "No se pudo eliminar el archivo. Comprueba que no esté abierto por otro programa.")
 
+    def on_opening_label_link(self, link):
+        if link == "build_tree":
+            self.build_opening_tree()
+
+    def build_opening_tree(self):
+        name = self.db.active_db_name
+        path = self.db.db_metadata.get(name, {}).get("path")
+        if not path:
+            QMessageBox.warning(self, "Acción no permitida", "No se puede generar un árbol para la Clipbase interna.")
+            return
+            
+        ret = QMessageBox.question(self, "Generar Árbol", 
+            f"¿Deseas generar el índice de árbol para '{name}'?\n\nEsto permitirá una exploración instantánea de las aperturas (transposiciones).",
+            QMessageBox.Yes | QMessageBox.No)
+            
+        if ret == QMessageBox.Yes:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.progress.show()
+            from core.workers import TreeBuilderWorker
+            self.tree_builder = TreeBuilderWorker(path)
+            self.tree_builder.progress.connect(self.progress.setValue) # Conexión faltante corregida
+            self.tree_builder.status.connect(self.statusBar().showMessage)
+            self.tree_builder.finished.connect(self.on_tree_built)
+            self.tree_builder.start()
+
+    def on_tree_built(self, tree_path):
+        self.progress.hide()
+        # Notificar al manager que cargue el nuevo árbol
+        self.db.load_tree(self.db.db_metadata[self.db.active_db_name]["path"])
+        self.run_stats_worker() # Refrescar el árbol actual con los nuevos datos
+        self.statusBar().showMessage(f"Árbol generado con éxito: {os.path.basename(tree_path)}", 5000)
+        QMessageBox.information(self, "Proceso Completado", "Se ha generado el índice de árbol. Ahora la exploración será instantánea.")
+
     def export_filter_to_pgn(self):
         # Exportar partidas visibles (filtradas) a un archivo PGN
         df = self.db.current_filter_df if self.db.current_filter_df is not None else self.db.get_active_df()
@@ -617,6 +674,7 @@ class MainWindow(QMainWindow):
         if not path: return
         if not path.endswith(".pgn"): path += ".pgn"
 
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.show()
         
@@ -634,6 +692,7 @@ class MainWindow(QMainWindow):
     def import_pgn(self):
         path, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "/data/chess", "Chess PGN (*.pgn)")
         if path:
+            self.progress.setRange(0, 100)
             self.progress.setValue(0)
             self.progress.show()
             QApplication.processEvents() # Forzar dibujado inicial
@@ -667,8 +726,9 @@ class MainWindow(QMainWindow):
         col_name = self.col_mapping.get(logical_index)
         if not col_name: return
         
-        # Feedback visual inmediato
-        self.progress.setRange(0, 0) # Modo indeterminado
+        # Feedback visual estable
+        self.progress.setRange(0, 100)
+        self.progress.setValue(50)
         self.progress.setVisible(True)
         self.statusBar().showMessage(f"Ordenando por {col_name}...", 2000)
         
@@ -701,6 +761,7 @@ class MainWindow(QMainWindow):
                 
             self.refresh_db_list(df_to_show)
             
+        self.progress.setValue(100)
         self.progress.setVisible(False)
 
     def open_search(self):
@@ -712,15 +773,18 @@ class MainWindow(QMainWindow):
         df = df_to_show if isinstance(df_to_show, pl.DataFrame) else self.db.get_active_df()
         if df is None: return
         # self.db_table.setSortingEnabled(False) # Ya está desactivado globalmente
-        total = self.db.get_active_df().height
+        total_db = self.db.get_active_df().height
         
         if df_to_show is None or not isinstance(df_to_show, pl.DataFrame):
-            self.label_db_stats.setText(f"[{total}/{total}]")
+            f_total = self.format_qty(total_db)
+            self.label_db_stats.setText(f"[{f_total}/{f_total}]")
             self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
             self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         else:
             count = df_to_show.height
-            self.label_db_stats.setText(f"[{count}/{total}]")
+            f_count = self.format_qty(count)
+            f_total = self.format_qty(total_db)
+            self.label_db_stats.setText(f"[{f_count}/{f_total}]")
             
             # Detectar si es un filtro normal o uno invertido (rojo)
             # Como aproximación simple, usamos un flag o lógica de bando
@@ -728,7 +792,7 @@ class MainWindow(QMainWindow):
             if getattr(self, '_just_inverted', False):
                 self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #c62828; background: #ffebee; padding: 4px; border-radius: 3px; border: 1px solid #ffcdd2; margin-bottom: 5px;")
                 self._just_inverted = False
-            elif count < total:
+            elif count < total_db:
                 self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #2e7d32; background: #e8f5e9; padding: 4px; border-radius: 3px; border: 1px solid #a5d6a7; margin-bottom: 5px;")
             else:
                 self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
@@ -825,15 +889,71 @@ class MainWindow(QMainWindow):
 
     def run_stats_worker(self):
         if hasattr(self, 'stats_worker') and self.stats_worker.isRunning(): self.stats_worker.terminate(); self.stats_worker.wait()
-        self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE); self.stats_worker.finished.connect(self.on_stats_finished); self.stats_worker.start()
+        
+        # Mostrar carga en barra global
+        self.progress.setRange(0, 0)
+        self.progress.show()
+        self.statusBar().showMessage("Calculando estadísticas de la posición...")
+        
+        # Calcular hash actual
+        import chess.polyglot
+        current_hash = chess.polyglot.zobrist_hash(self.game.board)
+        
+        self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash)
+        self.stats_worker.finished.connect(self.on_stats_finished)
+        self.stats_worker.start()
 
     def update_stats(self):
         is_filtered = self.db.current_filter_df is not None
         status_text = " (Filtrado)" if is_filtered else ""
         self.label_apertura.setText(f"<b>Apertura:</b> {self.eco.get_opening_name(self.game.current_line_uci)}{status_text}")
-        self.stats_timer.start(150)
+        # self.stats_timer.start(150) # Debounce
+        self.stats_timer.start(50) # Más rápido para sensación de respuesta, la caché ayuda
+
+    def format_qty(self, n, precise=False):
+        """Formatea números grandes: 4900000 -> 4.9M o 4.900.000"""
+        if precise:
+            return f"{n:,}".replace(",", ".")
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.2f}M".replace(".00M", "M")
+        if n >= 1_000:
+            return f"{n/1_000:.1f}k".replace(".0k", "k")
+        return str(n)
 
     def on_stats_finished(self, res):
+        self.progress.hide()
+        
+        # Calcular total de partidas en la posición
+        total_pos = 0
+        is_partial = False
+        if res is not None and res.height > 0:
+            total_pos = res.select(pl.sum("c")).item()
+            is_partial = "_is_partial" in res.columns and res.row(0, named=True).get("_is_partial")
+        
+        # Obtener total de la VISTA actual
+        current_view = self.db.get_current_view()
+        total_view = current_view.height if current_view is not None else 0
+        
+        # Actualizar etiqueta de apertura con formato legible
+        status_text = " (Filtrado)" if self.db.current_filter_df is not None else ""
+        
+        txt_pos = self.format_qty(total_pos)
+        txt_total = self.format_qty(total_view)
+        
+        if is_partial:
+            label_html = f'<a href="build_tree" style="color: #800000; text-decoration: none;"><b>Muestra:</b></a> {txt_pos} de {txt_total}'
+        else:
+            label_html = f'<b>Total partidas:</b> {txt_pos} de {txt_total}'
+        
+        self.label_apertura.setText(
+            f"<b>Apertura:</b> {self.eco.get_opening_name(self.game.current_line_uci)}{status_text} | {label_html}"
+        )
+
+        if is_partial:
+            self.statusBar().showMessage("⚠️ Árbol parcial. Haz clic en 'Muestra' para generar el índice completo.", 5000)
+        else:
+            self.statusBar().showMessage("Listo", 2000)
+            
         if res is None: self.tree_ana.setRowCount(0); return
         table = self.tree_ana; table.setSortingEnabled(False); table.setRowCount(res.height); is_white = self.game.board.turn == chess.WHITE
         
@@ -846,14 +966,35 @@ class MainWindow(QMainWindow):
                 
                 san = self.game.board.san(mv)
                 it_move = QTableWidgetItem(san); it_move.setData(Qt.UserRole, r["uci"]); table.setItem(valid_rows, 0, it_move)
-                it_count = QTableWidgetItem(); it_count.setData(Qt.DisplayRole, r["c"]); table.setItem(valid_rows, 1, it_count)
+                
+                # Frecuencia: Mostrar con puntos, ordenar por número real
+                f_count = self.format_qty(r["c"], precise=True)
+                it_count = SortableWidgetItem(f_count)
+                it_count.setData(Qt.UserRole, r["c"])
+                table.setItem(valid_rows, 1, it_count)
+                
                 table.setCellWidget(valid_rows, 2, ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white))
+                
+                # Win %: Mostrar con %, ordenar por número real
                 win_rate = ((r["w"] + 0.5 * r["d"]) / r["c"] if is_white else (r["b"] + 0.5 * r["d"]) / r["c"]) * 100
-                it_win = QTableWidgetItem(f"{win_rate:.1f}%"); it_win.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter); table.setItem(valid_rows, 3, it_win)
+                it_win = SortableWidgetItem(f"{win_rate:.1f}%")
+                it_win.setData(Qt.UserRole, win_rate)
+                it_win.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(valid_rows, 3, it_win)
+                
                 score = (r["w"] + 0.5 * r["d"]) / r["c"] if is_white else (r["b"] + 0.5 * r["d"]) / r["c"]
                 perf = int(r["avg_b_elo" if is_white else "avg_w_elo"] + (score - 0.5) * 800)
-                it_elo = QTableWidgetItem(); it_elo.setData(Qt.DisplayRole, int(r["avg_w_elo" if is_white else "avg_b_elo"])); table.setItem(valid_rows, 4, it_elo)
-                it_perf = QTableWidgetItem(); it_perf.setData(Qt.DisplayRole, perf); table.setItem(valid_rows, 5, it_perf)
+                
+                # Elos y Perf: Orden numérico
+                w_elo_val = int(r["avg_w_elo" if is_white else "avg_b_elo"])
+                it_elo = SortableWidgetItem(str(w_elo_val))
+                it_elo.setData(Qt.UserRole, w_elo_val)
+                table.setItem(valid_rows, 4, it_elo)
+                
+                it_perf = SortableWidgetItem(str(perf))
+                it_perf.setData(Qt.UserRole, perf)
+                table.setItem(valid_rows, 5, it_perf)
+                
                 valid_rows += 1
             except: continue
             
