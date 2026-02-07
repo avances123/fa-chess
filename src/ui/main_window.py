@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QStatusBar, QTabWidget, QListWidget, QListWidgetItem, QMenu, 
                              QColorDialog, QMenuBar, QAbstractItemView, QToolBar, 
                              QStyle, QSizePolicy, QMessageBox, QApplication)
-from PySide6.QtCore import Qt, QPointF, QTimer
+from PySide6.QtCore import Qt, QPointF, QTimer, QSize
 from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QColor, QBrush
 import qtawesome as qta
 
@@ -135,13 +135,25 @@ class MainWindow(QMainWindow):
         
         panel_ana = QWidget(); p_ana_layout = QVBoxLayout(panel_ana)
         info_box = QWidget(); info_layout = QHBoxLayout(info_box); info_layout.setContentsMargins(0, 0, 0, 0)
-        self.label_apertura = QLabel("<b>Apertura:</b> Inicial")
-        self.label_apertura.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
-        self.label_apertura.linkActivated.connect(self.on_opening_label_link)
+        
+        # Etiqueta de Apertura (Estilizada)
+        self.label_eco = QLabel("Apertura: Inicial")
+        self.label_eco.setStyleSheet(STYLE_BADGE_NORMAL)
+        self.label_eco.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
+        self.label_eco.linkActivated.connect(self.on_opening_label_link)
+        
+        # Etiqueta de Estadísticas de Posición (Estilizada)
+        self.label_pos_stats = QLabel("Partidas: 0")
+        self.label_pos_stats.setStyleSheet(STYLE_BADGE_NORMAL)
+        self.label_pos_stats.setAlignment(Qt.AlignCenter)
         
         self.label_eval = QLabel("")
         self.label_eval.setStyleSheet(STYLE_LABEL_EVAL)
-        info_layout.addWidget(self.label_apertura, 1); info_layout.addWidget(self.label_eval); p_ana_layout.addWidget(info_box)
+        
+        info_layout.addWidget(self.label_eco, 1)
+        info_layout.addWidget(self.label_pos_stats, 1)
+        info_layout.addWidget(self.label_eval)
+        p_ana_layout.addWidget(info_box)
         
         self.tree_ana = self.create_scid_table(["Movim.", "Frec.", "Barra", "Win %", "AvElo", "Perf"])
         self.tree_ana.setFont(table_font); self.tree_ana.itemDoubleClicked.connect(self.on_tree_cell_double_click); self.tree_ana.itemClicked.connect(self.on_tree_cell_click)
@@ -162,9 +174,34 @@ class MainWindow(QMainWindow):
         self.hist_ana = QTextBrowser(); self.hist_ana.setOpenLinks(False); self.hist_ana.anchorClicked.connect(self.jump_to_move_link)
         layout_notacion.addWidget(self.hist_ana)
         
-        btn_save = QPushButton(qta.icon('fa5s.save'), " Guardar en Base")
-        btn_save.clicked.connect(self.add_to_clipbase)
-        layout_notacion.addWidget(btn_save)
+        # Barra de Herramientas de Partida (Acciones sobre la partida actual)
+        game_actions_toolbar = QToolBar()
+        game_actions_toolbar.setIconSize(QSize(16, 16))
+        game_actions_toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        game_actions_toolbar.setStyleSheet("QToolBar { spacing: 10px; background: #f5f5f5; border-top: 1px solid #ddd; padding: 2px; }")
+        
+        act_save_active = QAction(qta.icon('fa5s.save', color='#1976d2'), "Guardar", self)
+        act_save_active.setStatusTip("Guardar la partida actual en la base de datos seleccionada")
+        act_save_active.setToolTip("Guardar en la base de datos activa")
+        act_save_active.triggered.connect(self.save_to_active_db)
+        game_actions_toolbar.addAction(act_save_active)
+        
+        act_save_clip = QAction(qta.icon('fa5s.clipboard', color='#2e7d32'), "a Clipbase", self)
+        act_save_clip.setStatusTip("Copiar la partida actual al portapapeles interno (Clipbase)")
+        act_save_clip.setToolTip("Añadir esta partida a la Clipbase (borrador)")
+        act_save_clip.triggered.connect(self.add_to_clipbase)
+        game_actions_toolbar.addAction(act_save_clip)
+        
+        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        game_actions_toolbar.addWidget(spacer)
+        
+        act_new_game = QAction(qta.icon('fa5s.file'), "Nueva", self)
+        act_new_game.setStatusTip("Limpiar el tablero y los datos para empezar una nueva partida desde cero")
+        act_new_game.setToolTip("Limpiar tablero y empezar nueva partida")
+        act_new_game.triggered.connect(lambda: self.game.load_uci_line(""))
+        game_actions_toolbar.addAction(act_new_game)
+        
+        layout_notacion.addWidget(game_actions_toolbar)
         
         self.tabs_side.addTab(tab_notacion, qta.icon('fa5s.list-ol'), "Notación")
         
@@ -201,22 +238,58 @@ class MainWindow(QMainWindow):
         db_layout = QHBoxLayout(self.tab_db)
         
         # Sidebar de Bases
-        db_sidebar = QVBoxLayout()
+        db_sidebar_container = QWidget()
+        db_sidebar = QVBoxLayout(db_sidebar_container)
         db_sidebar.setContentsMargins(5, 5, 5, 5)
         
-        db_sidebar.addWidget(QLabel("<b>Partidas Filtradas</b>"))
-        
-        # Indicador de estadísticas encima de Bases Abiertas
+        # Título y Estadísticas (Badge elegante)
+        stats_header = QHBoxLayout()
+        stats_header.addWidget(QLabel("<b>Partidas:</b>"))
         self.label_db_stats = QLabel("[0/0]")
-        self.label_db_stats.setAlignment(Qt.AlignCenter)
+        self.label_db_stats.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.label_db_stats.setStyleSheet(STYLE_BADGE_NORMAL)
-        db_sidebar.addWidget(self.label_db_stats)
+        stats_header.addWidget(self.label_db_stats)
+        db_sidebar.addLayout(stats_header)
+
+        # Barra de Herramientas de Bases (Acciones rápidas sobre la lista)
+        db_actions_toolbar = QToolBar()
+        db_actions_toolbar.setIconSize(QSize(16, 16))
+        db_actions_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        db_actions_toolbar.setStyleSheet("QToolBar { spacing: 5px; background: transparent; border: none; }")
+        
+        act_new = QAction(qta.icon('fa5s.plus-circle', color='#2e7d32'), "Nueva Base", self)
+        act_new.setStatusTip("Crear un nuevo archivo de base de datos vacío (.parquet)")
+        act_new.triggered.connect(self.create_new_db)
+        db_actions_toolbar.addAction(act_new)
+        
+        act_import = QAction(qta.icon('fa5s.file-import', color='#1976d2'), "Importar PGN", self)
+        act_import.setStatusTip("Importar partidas desde un archivo PGN externo")
+        act_import.triggered.connect(self.import_pgn)
+        db_actions_toolbar.addAction(act_import)
+        
+        db_actions_toolbar.addSeparator()
+        
+        act_filter = QAction(qta.icon('fa5s.search'), "Filtrar Partidas", self)
+        act_filter.setStatusTip("Buscar partidas por nombres, ELO o posición actual")
+        act_filter.triggered.connect(self.open_search)
+        db_actions_toolbar.addAction(act_filter)
+        
+        act_invert = QAction(qta.icon('fa5s.exchange-alt'), "Invertir Filtro", self)
+        act_invert.setStatusTip("Ver las partidas que NO coinciden con el filtro actual")
+        act_invert.triggered.connect(self.trigger_invert_filter)
+        db_actions_toolbar.addAction(act_invert)
+        
+        act_clear = QAction(qta.icon('fa5s.eraser', color='#c62828'), "Quitar Filtros", self)
+        act_clear.setStatusTip("Eliminar todos los filtros y volver a ver la base completa")
+        act_clear.triggered.connect(lambda: self.db.set_active_db(self.db.active_db_name))
+        db_actions_toolbar.addAction(act_clear)
+        
+        db_sidebar.addWidget(db_actions_toolbar)
 
         # Lista de Bases
         db_sidebar.addWidget(QLabel("<b>Bases Abiertas</b>"))
         self.db_list_widget = QListWidget()
-        from PySide6.QtCore import QSize
-        self.db_list_widget.setIconSize(QSize(14, 14)) # Iconos más pequeños y elegantes
+        self.db_list_widget.setIconSize(QSize(14, 14))
         
         # Inicializar Clipbase con icono de portapapeles
         clip_item = QListWidgetItem(qta.icon('fa5s.clipboard', color='#2e7d32'), "Clipbase")
@@ -227,21 +300,7 @@ class MainWindow(QMainWindow):
         self.db_list_widget.customContextMenuRequested.connect(self.on_db_list_context_menu)
         db_sidebar.addWidget(self.db_list_widget)
         
-        # Panel de Acciones (Agrupado abajo)
-        actions_group = QWidget(); actions_layout = QVBoxLayout(actions_group); actions_layout.setContentsMargins(0, 5, 0, 5)
-        
-        self.btn_search = QPushButton(qta.icon('fa5s.search'), " Filtrar Partidas"); self.btn_search.clicked.connect(self.open_search); actions_layout.addWidget(self.btn_search)
-        
-        self.btn_invert_filter = QPushButton(qta.icon('fa5s.exchange-alt'), " Invertir Filtro")
-        self.btn_invert_filter.clicked.connect(self.trigger_invert_filter)
-        actions_layout.addWidget(self.btn_invert_filter)
-
-        self.btn_clear_filter = QPushButton(qta.icon('fa5s.eraser'), " Quitar Filtros"); self.btn_clear_filter.clicked.connect(lambda: self.db.set_active_db(self.db.active_db_name)); actions_layout.addWidget(self.btn_clear_filter)
-        
-        actions_group.setLayout(actions_layout) # Asegurar que el layout se aplica si faltaba
-        db_sidebar.addWidget(actions_group)
-        
-        db_layout.addLayout(db_sidebar, 1)
+        db_layout.addWidget(db_sidebar_container, 1)
         
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         
@@ -548,7 +607,14 @@ class MainWindow(QMainWindow):
         
         # Menú Archivo
         file_menu = menubar.addMenu("&Archivo")
-        exit_action = QAction("&Salir", self)
+        
+        settings_action = QAction(qta.icon('fa5s.cog'), "&Configuración...", self)
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction(qta.icon('fa5s.power-off'), "&Salir", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
@@ -556,21 +622,39 @@ class MainWindow(QMainWindow):
         # Menú Bases de Datos
         db_menu = menubar.addMenu("&Bases de Datos")
         
-        new_db_action = QAction(qta.icon('fa5s.plus'), "Nueva Base &Vacía...", self)
+        new_db_action = QAction(qta.icon('fa5s.plus-circle', color='#2e7d32'), "Nueva Base &Vacía...", self)
+        new_db_action.setShortcut("Ctrl+N")
         new_db_action.triggered.connect(self.create_new_db)
         db_menu.addAction(new_db_action)
         
-        db_menu.addSeparator()
+        open_parquet_action = QAction(qta.icon('fa5s.folder-open'), "Abrir Base &Parquet...", self)
+        open_parquet_action.setShortcut("Ctrl+O")
+        open_parquet_action.triggered.connect(self.open_parquet_file)
+        db_menu.addAction(open_parquet_action)
 
-        open_pgn_action = QAction(qta.icon('fa5s.file-import'), "Importar &PGN...", self)
+        open_pgn_action = QAction(qta.icon('fa5s.file-import', color='#1976d2'), "Importar &PGN...", self)
         open_pgn_action.setShortcut("Ctrl+I")
         open_pgn_action.triggered.connect(self.import_pgn)
         db_menu.addAction(open_pgn_action)
         
-        open_parquet_action = QAction(qta.icon('fa5s.file-code'), "Abrir &Parquet...", self)
-        open_parquet_action.setShortcut("Ctrl+O")
-        open_parquet_action.triggered.connect(self.open_parquet_file)
-        db_menu.addAction(open_parquet_action)
+        db_menu.addSeparator()
+        
+        # Acciones de Filtro en el Menú (Coherencia con la Toolbar)
+        filter_action = QAction(qta.icon('fa5s.search'), "&Filtrar Partidas...", self)
+        filter_action.setShortcut("Ctrl+F")
+        filter_action.triggered.connect(self.open_search)
+        db_menu.addAction(filter_action)
+        
+        invert_action = QAction(qta.icon('fa5s.exchange-alt'), "&Invertir Filtro", self)
+        invert_action.triggered.connect(self.trigger_invert_filter)
+        db_menu.addAction(invert_action)
+        
+        clear_action = QAction(qta.icon('fa5s.eraser', color='#c62828'), "&Quitar Filtros", self)
+        clear_action.setShortcut("Ctrl+L")
+        clear_action.triggered.connect(lambda: self.db.set_active_db(self.db.active_db_name))
+        db_menu.addAction(clear_action)
+        
+        db_menu.addSeparator()
 
         export_pgn_action = QAction(qta.icon('fa5s.file-export'), "Exportar &Filtro a PGN...", self)
         export_pgn_action.setShortcut("Ctrl+E")
@@ -591,9 +675,17 @@ class MainWindow(QMainWindow):
         
         # Menú Tablero
         board_menu = menubar.addMenu("&Tablero")
-        settings_action = QAction("&Configuración...", self)
-        settings_action.triggered.connect(self.open_settings)
-        board_menu.addAction(settings_action)
+        
+        flip_action = QAction(qta.icon('fa5s.retweet'), "&Girar Tablero", self)
+        flip_action.setShortcut("F")
+        flip_action.triggered.connect(self.flip_boards)
+        board_menu.addAction(flip_action)
+        
+        engine_action = QAction(qta.icon('fa5s.microchip'), "&Activar Motor", self)
+        engine_action.setShortcut("E")
+        engine_action.setCheckable(True)
+        engine_action.triggered.connect(self.toggle_engine_shortcut)
+        board_menu.addAction(engine_action)
 
     def create_new_db(self):
         path, _ = QFileDialog.getSaveFileName(self, "Crear Nueva Base", "/data/chess", "Chess Parquet (*.parquet)")
@@ -906,8 +998,8 @@ class MainWindow(QMainWindow):
     def update_stats(self):
         is_filtered = self.db.current_filter_df is not None
         status_text = " (Filtrado)" if is_filtered else ""
-        self.label_apertura.setText(f"<b>Apertura:</b> {self.eco.get_opening_name(self.game.current_line_uci)}{status_text}")
-        # self.stats_timer.start(150) # Debounce
+        self.label_eco.setText(f"Apertura: {self.eco.get_opening_name(self.game.current_line_uci)}{status_text}")
+        self.label_eco.setStyleSheet(STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL)
         self.stats_timer.start(50) # Más rápido para sensación de respuesta, la caché ayuda
 
     def format_qty(self, n, precise=False):
@@ -934,27 +1026,31 @@ class MainWindow(QMainWindow):
         current_view = self.db.get_current_view()
         total_view = current_view.height if current_view is not None else 0
         
-        # Actualizar etiqueta de apertura con formato legible
-        status_text = " (Filtrado)" if self.db.current_filter_df is not None else ""
-        
+        # Formatear números
         txt_pos = self.format_qty(total_pos)
         txt_total = self.format_qty(total_view)
         
+        # Actualizar Etiqueta de Estadísticas (Badge)
         if is_partial:
-            label_html = f'<a href="build_tree" style="color: #800000; text-decoration: none;"><b>Muestra:</b></a> {txt_pos} de {txt_total}'
+            self.label_pos_stats.setText(f"Muestra: {txt_pos} de {txt_total}")
+            self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR)
+            self.label_pos_stats.setToolTip("Haz clic para generar el índice completo (Árbol)")
         else:
-            label_html = f'<b>Total partidas:</b> {txt_pos} de {txt_total}'
-        
-        self.label_apertura.setText(
-            f"<b>Apertura:</b> {self.eco.get_opening_name(self.game.current_line_uci)}{status_text} | {label_html}"
-        )
+            self.label_pos_stats.setText(f"Partidas: {txt_pos} de {txt_total}")
+            self.label_pos_stats.setStyleSheet(STYLE_BADGE_SUCCESS if total_pos > 0 else STYLE_BADGE_NORMAL)
+            self.label_pos_stats.setToolTip("")
 
         if is_partial:
             self.statusBar().showMessage("⚠️ Árbol parcial. Haz clic en 'Muestra' para generar el índice completo.", 5000)
         else:
             self.statusBar().showMessage("Listo", 2000)
             
-        if res is None: self.tree_ana.setRowCount(0); return
+        if res is None or total_pos <= 1: 
+            self.tree_ana.setRowCount(0)
+            if total_pos == 1:
+                self.statusBar().showMessage("Posición única: no hay más variantes en la base", 3000)
+            return
+            
         table = self.tree_ana; table.setSortingEnabled(False); table.setRowCount(res.height); is_white = self.game.board.turn == chess.WHITE
         
         valid_rows = 0
