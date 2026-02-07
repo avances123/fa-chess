@@ -25,6 +25,7 @@ from ui.search_dialog import SearchDialog
 from ui.edit_game_dialog import EditGameDialog
 from ui.widgets.results_bar import ResultsWidget
 from ui.widgets.eval_graph import EvaluationGraph
+from ui.widgets.analysis_report import AnalysisReport
 from ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
                        STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
                        STYLE_BADGE_ERROR)
@@ -40,6 +41,11 @@ class MainWindow(QMainWindow):
         self.db = DBManager()
         self.game = GameController()
         self.eco = ECOManager(ECO_FILE)
+        
+        # Estado de Ordenación
+        self.sort_col = None
+        self.sort_desc = False
+        self.col_mapping = {0: "date", 1: "white", 2: "w_elo", 3: "black", 4: "b_elo", 5: "result"}
         
         self.game_evals = [] # Almacenar evaluaciones de la partida actual
         
@@ -146,7 +152,7 @@ class MainWindow(QMainWindow):
         
         self.tabs_side.addTab(tab_notacion, qta.icon('fa5s.list-ol'), "Notación")
         
-        # Pestaña 2: Gráfico
+        # Pestaña 3: Gráfico
         tab_grafico = QWidget()
         layout_grafico = QVBoxLayout(tab_grafico)
         layout_grafico.setContentsMargins(0,0,0,0)
@@ -155,13 +161,23 @@ class MainWindow(QMainWindow):
         self.eval_graph.move_selected.connect(self.game.jump_to_move) 
         layout_grafico.addWidget(self.eval_graph)
         
-        btn_analyze = QPushButton(qta.icon('fa5s.magic'), " Analizar Partida Completa")
-        btn_analyze.clicked.connect(self.start_full_analysis)
-        layout_grafico.addWidget(btn_analyze)
+        # btn_analyze movido fuera
         
         self.tabs_side.addTab(tab_grafico, qta.icon('fa5s.chart-area'), "Gráfico")
         
+        # Pestaña 3: Informe
+        self.analysis_report = AnalysisReport()
+        self.tabs_side.addTab(self.analysis_report, qta.icon('fa5s.chart-pie'), "Informe")
+        
         p_ana_layout.addWidget(self.tabs_side)
+        
+        # Botonera Común Inferior del Panel Lateral
+        common_btns = QHBoxLayout()
+        btn_analyze = QPushButton(qta.icon('fa5s.magic'), " Analizar Partida Completa")
+        btn_analyze.clicked.connect(self.start_full_analysis)
+        common_btns.addWidget(btn_analyze)
+        p_ana_layout.addLayout(common_btns)
+        
         ana_layout.addWidget(panel_ana, 1)
 
         # --- TAB 2: GESTOR ---
@@ -271,6 +287,15 @@ class MainWindow(QMainWindow):
         self.progress.hide()
         self.board_ana.setEnabled(True)
         self.tree_ana.setEnabled(True)
+        
+        # Obtener nombres de jugadores
+        w_name = getattr(self, 'current_white', "Blancas")
+        b_name = getattr(self, 'current_black', "Negras")
+        
+        # Actualizar Informe
+        moves_uci = [m.uci() for m in self.game.full_mainline]
+        self.analysis_report.update_stats(self.game_evals, moves_uci, w_name, b_name)
+        
         self.statusBar().showMessage("Análisis completo finalizado", 3000)
 
     def toggle_engine(self, checked):
@@ -327,7 +352,11 @@ class MainWindow(QMainWindow):
         super().leaveEvent(event)
 
     def create_scid_table(self, headers):
-        table = QTableWidget(0, len(headers)); table.setHorizontalHeaderLabels(headers); table.setEditTriggers(QAbstractItemView.NoEditTriggers); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setContextMenuPolicy(Qt.CustomContextMenu); table.verticalHeader().setVisible(False); table.verticalHeader().setDefaultSectionSize(22); table.horizontalHeader().setHighlightSections(True); table.setSortingEnabled(True); table.setShowGrid(True); table.setStyleSheet(STYLE_TABLE_HEADER)
+        table = QTableWidget(0, len(headers)); table.setHorizontalHeaderLabels(headers); table.setEditTriggers(QAbstractItemView.NoEditTriggers); table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setContextMenuPolicy(Qt.CustomContextMenu); table.verticalHeader().setVisible(False); table.verticalHeader().setDefaultSectionSize(22); table.horizontalHeader().setHighlightSections(True); table.setShowGrid(True); table.setStyleSheet(STYLE_TABLE_HEADER)
+        # Desactivar ordenación nativa y usar nuestra lógica
+        table.setSortingEnabled(False)
+        table.horizontalHeader().setSortIndicatorShown(True) # Mostrar flechita aunque sea manual
+        table.horizontalHeader().sectionClicked.connect(self.sort_database)
         return table
 
     def setup_toolbar(self, toolbar):
@@ -634,6 +663,46 @@ class MainWindow(QMainWindow):
         if row < 0: return
         self.db.set_active_db(self.db_list_widget.item(row).text())
 
+    def sort_database(self, logical_index):
+        col_name = self.col_mapping.get(logical_index)
+        if not col_name: return
+        
+        # Feedback visual inmediato
+        self.progress.setRange(0, 0) # Modo indeterminado
+        self.progress.setVisible(True)
+        self.statusBar().showMessage(f"Ordenando por {col_name}...", 2000)
+        
+        # Alternar orden
+        if self.sort_col == col_name:
+            self.sort_desc = not self.sort_desc
+        else:
+            self.sort_col = col_name
+            self.sort_desc = True 
+            
+        # Actualizar flechita en cabecera
+        order = Qt.DescendingOrder if self.sort_desc else Qt.AscendingOrder
+        self.db_table.horizontalHeader().setSortIndicator(logical_index, order)
+        
+        # Forzar repintado antes de congelar por cálculo
+        QApplication.processEvents()
+            
+        # Ordenar el DataFrame activo
+        db_name = self.db.active_db_name
+        if db_name in self.db.dbs:
+            # Para persistir el orden, lo ideal es ordenar self.db.dbs[db_name] o current_filter_df
+            df_to_show = None
+            if self.db.current_filter_df is not None:
+                self.db.current_filter_df = self.db.current_filter_df.sort(col_name, descending=self.sort_desc)
+                df_to_show = self.db.current_filter_df
+            else:
+                self.db.dbs[db_name] = self.db.dbs[db_name].sort(col_name, descending=self.sort_desc)
+                # Si no hay filtro, refresh_db_list cogerá dbs[name] automáticamente, pero podemos ser explícitos
+                df_to_show = self.db.dbs[db_name]
+                
+            self.refresh_db_list(df_to_show)
+            
+        self.progress.setVisible(False)
+
     def open_search(self):
         dialog = SearchDialog(self); dialog.white_input.setText(self.search_criteria["white"]); dialog.black_input.setText(self.search_criteria["black"]); dialog.min_elo_input.setText(self.search_criteria["min_elo"]); dialog.result_combo.setCurrentText(self.search_criteria["result"])
         if dialog.exec_():
@@ -642,7 +711,7 @@ class MainWindow(QMainWindow):
     def refresh_db_list(self, df_to_show=None):
         df = df_to_show if isinstance(df_to_show, pl.DataFrame) else self.db.get_active_df()
         if df is None: return
-        self.db_table.setSortingEnabled(False)
+        # self.db_table.setSortingEnabled(False) # Ya está desactivado globalmente
         total = self.db.get_active_df().height
         
         if df_to_show is None or not isinstance(df_to_show, pl.DataFrame):
@@ -667,7 +736,7 @@ class MainWindow(QMainWindow):
         disp = df.head(1000); self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
             self.db_table.setItem(i, 0, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 1, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 2, QTableWidgetItem(str(r["w_elo"]))); self.db_table.setItem(i, 3, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 4, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 5, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
-        self.db_table.setSortingEnabled(True); self.db_table.resizeColumnsToContents()
+        self.db_table.resizeColumnsToContents()
 
     def load_game_from_list(self, item):
         game_id = self.db_table.item(item.row(), 0).data(Qt.UserRole); row = self.db.get_game_by_id(self.db.active_db_name, game_id)
