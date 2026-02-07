@@ -142,15 +142,16 @@ class DBManager(QObject):
     def set_active_db(self, name):
         if name in self.dbs:
             self.active_db_name = name
-            self.current_filter_df = None
-            self.stats_cache.clear() # Limpiar caché al cambiar de base
+            self.current_filter_df = None # Reset filtro
+            self.stats_cache.clear()      # Limpiar caché de estadísticas
             
             # Recargar árbol de esta base
             path = self.db_metadata.get(name, {}).get("path")
             self.load_tree(path)
             
+            # Emitir señales para que la UI se entere del cambio total
             self.active_db_changed.emit(name)
-            self.filter_updated.emit(self.get_active_df())
+            self.filter_updated.emit(None) # Notificar que ya NO hay filtro
 
     def remove_database(self, name):
         if name == "Clipbase": return False

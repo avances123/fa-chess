@@ -65,9 +65,10 @@ class MainWindow(QMainWindow):
         
         # Conectar señales del gestor de base de datos
         self.db.active_db_changed.connect(self.refresh_db_list)
-        self.db.active_db_changed.connect(self.update_stats)
+        self.db.active_db_changed.connect(self.update_stats) # Refrescar vía timer (seguro)
+        
         self.db.filter_updated.connect(self.refresh_db_list)
-        self.db.filter_updated.connect(self.update_stats)
+        self.db.filter_updated.connect(self.update_stats) # Refrescar vía timer (seguro)
         
         # Temporizador para debouncing de estadísticas (evita lag)
         self.stats_timer = QTimer()
@@ -103,7 +104,14 @@ class MainWindow(QMainWindow):
         if "fens" not in df.columns:
             QMessageBox.warning(self, "Búsqueda por Posición", f"La base '{self.db.active_db_name}' no tiene el índice de posiciones.\n\nPor favor, vuelve a abrir el archivo PGN original para re-importarla.")
             return
-        self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "position_hash": pos_hash}
+        
+        # Guardamos el estado completo para que la Lupa lo reconozca
+        self.search_criteria = {
+            "white": "", "black": "", "min_elo": "", "result": "Cualquiera", 
+            "position_hash": pos_hash,
+            "use_position": True
+        }
+        
         filtered = self.db.filter_db(self.search_criteria)
         self.refresh_db_list(filtered)
         self.tabs.setCurrentIndex(1)
@@ -281,7 +289,7 @@ class MainWindow(QMainWindow):
         
         act_clear = QAction(qta.icon('fa5s.eraser', color='#c62828'), "Quitar Filtros", self)
         act_clear.setStatusTip("Eliminar todos los filtros y volver a ver la base completa")
-        act_clear.triggered.connect(lambda: self.db.set_active_db(self.db.active_db_name))
+        act_clear.triggered.connect(self.reset_filters)
         db_actions_toolbar.addAction(act_clear)
         
         db_sidebar.addWidget(db_actions_toolbar)
@@ -651,7 +659,7 @@ class MainWindow(QMainWindow):
         
         clear_action = QAction(qta.icon('fa5s.eraser', color='#c62828'), "&Quitar Filtros", self)
         clear_action.setShortcut("Ctrl+L")
-        clear_action.triggered.connect(lambda: self.db.set_active_db(self.db.active_db_name))
+        clear_action.triggered.connect(self.reset_filters)
         db_menu.addAction(clear_action)
         
         db_menu.addSeparator()
@@ -804,6 +812,12 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.board_ana.color_light, self.board_ana.color_dark, self)
         if dialog.exec_(): light, dark = dialog.get_colors(); self.board_ana.color_light = light; self.board_ana.color_dark = dark; self.board_ana.update_board(); self.save_config()
 
+    def reset_filters(self):
+        """Limpia el filtro actual y refresca toda la UI"""
+        self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
+        self.db.set_active_db(self.db.active_db_name)
+        # La señal active_db_changed ya disparará update_stats y refresh_db_list
+
     def resizeEvent(self, event): h = self.centralWidget().height() - 40; self.board_ana.setFixedWidth(h); super().resizeEvent(event)
 
     def trigger_invert_filter(self):
@@ -857,37 +871,61 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
 
     def open_search(self):
-        dialog = SearchDialog(self); dialog.white_input.setText(self.search_criteria["white"]); dialog.black_input.setText(self.search_criteria["black"]); dialog.min_elo_input.setText(self.search_criteria["min_elo"]); dialog.result_combo.setCurrentText(self.search_criteria["result"])
+        dialog = SearchDialog(self)
+        dialog.white_input.setText(self.search_criteria.get("white", ""))
+        dialog.black_input.setText(self.search_criteria.get("black", ""))
+        dialog.min_elo_input.setText(str(self.search_criteria.get("min_elo", "")))
+        dialog.result_combo.setCurrentText(self.search_criteria.get("result", "Cualquiera"))
+        
+        # Sincronizar el checkbox con el estado actual
+        dialog.pos_check.setChecked(self.search_criteria.get("use_position", False))
+        
         if dialog.exec_():
-            self.search_criteria = dialog.get_criteria(); self.db.filter_db(self.search_criteria)
+            criteria = dialog.get_criteria()
+            
+            # Si todos los campos están vacíos, es equivalente a resetear filtros
+            is_empty = not any([criteria.get("white"), criteria.get("black"), 
+                              criteria.get("min_elo"), criteria.get("use_position")])
+            if criteria.get("result") != "Cualquiera": is_empty = False
+
+            if is_empty:
+                self.reset_filters()
+                return
+
+            # Integrar búsqueda por posición si se ha marcado
+            if criteria.get("use_position"):
+                import chess.polyglot
+                criteria["position_hash"] = chess.polyglot.zobrist_hash(self.game.board)
+            
+            self.search_criteria = criteria
+            self.db.filter_db(self.search_criteria)
+            # Cambiar a la pestaña del gestor para ver los resultados
+            self.tabs.setCurrentIndex(1)
 
     def refresh_db_list(self, df_to_show=None):
         df = df_to_show if isinstance(df_to_show, pl.DataFrame) else self.db.get_active_df()
         if df is None: return
-        # self.db_table.setSortingEnabled(False) # Ya está desactivado globalmente
-        total_db = self.db.get_active_df().height
         
-        if df_to_show is None or not isinstance(df_to_show, pl.DataFrame):
+        total_db = self.db.get_active_df().height
+        is_filtered = self.db.current_filter_df is not None
+        is_inverted = getattr(self, '_just_inverted', False)
+
+        if not is_filtered:
             f_total = self.format_qty(total_db)
             self.label_db_stats.setText(f"[{f_total}/{f_total}]")
-            self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
-            self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
+            self.label_db_stats.setStyleSheet(STYLE_BADGE_NORMAL)
+            self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}
         else:
-            count = df_to_show.height
+            count = df_to_show.height if df_to_show is not None else df.height
             f_count = self.format_qty(count)
             f_total = self.format_qty(total_db)
             self.label_db_stats.setText(f"[{f_count}/{f_total}]")
             
-            # Detectar si es un filtro normal o uno invertido (rojo)
-            # Como aproximación simple, usamos un flag o lógica de bando
-            # Para esta feature, pondremos rojo si el usuario acaba de pulsar invertir
-            if getattr(self, '_just_inverted', False):
-                self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #c62828; background: #ffebee; padding: 4px; border-radius: 3px; border: 1px solid #ffcdd2; margin-bottom: 5px;")
-                self._just_inverted = False
-            elif count < total_db:
-                self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #2e7d32; background: #e8f5e9; padding: 4px; border-radius: 3px; border: 1px solid #a5d6a7; margin-bottom: 5px;")
+            if is_inverted:
+                self.label_db_stats.setStyleSheet(STYLE_BADGE_ERROR)
+                self._just_inverted = False # Reset flag tras aplicar estilo
             else:
-                self.label_db_stats.setStyleSheet("font-family: monospace; font-weight: bold; color: #555; background: #e0e0e0; padding: 4px; border-radius: 3px; border: 1px solid #ccc; margin-bottom: 5px;")
+                self.label_db_stats.setStyleSheet(STYLE_BADGE_SUCCESS)
         
         disp = df.head(1000); self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
@@ -980,7 +1018,12 @@ class MainWindow(QMainWindow):
             except: pass
 
     def run_stats_worker(self):
-        if hasattr(self, 'stats_worker') and self.stats_worker.isRunning(): self.stats_worker.terminate(); self.stats_worker.wait()
+        # Si ya hay un worker corriendo, lo desconectamos para que sus resultados tarde
+        # no pisen a los del nuevo que vamos a lanzar. No usamos wait() para no colgar la UI.
+        if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
+            try:
+                self.stats_worker.finished.disconnect()
+            except: pass
         
         # Mostrar carga en barra global
         self.progress.setRange(0, 0)
@@ -999,6 +1042,7 @@ class MainWindow(QMainWindow):
         is_filtered = self.db.current_filter_df is not None
         status_text = " (Filtrado)" if is_filtered else ""
         self.label_eco.setText(f"Apertura: {self.eco.get_opening_name(self.game.current_line_uci)}{status_text}")
+        # Solo ponemos verde si hay un filtro ACTIVO
         self.label_eco.setStyleSheet(STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL)
         self.stats_timer.start(50) # Más rápido para sensación de respuesta, la caché ayuda
 
@@ -1031,13 +1075,15 @@ class MainWindow(QMainWindow):
         txt_total = self.format_qty(total_view)
         
         # Actualizar Etiqueta de Estadísticas (Badge)
+        is_filtered = self.db.current_filter_df is not None
         if is_partial:
             self.label_pos_stats.setText(f"Muestra: {txt_pos} de {txt_total}")
             self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR)
             self.label_pos_stats.setToolTip("Haz clic para generar el índice completo (Árbol)")
         else:
             self.label_pos_stats.setText(f"Partidas: {txt_pos} de {txt_total}")
-            self.label_pos_stats.setStyleSheet(STYLE_BADGE_SUCCESS if total_pos > 0 else STYLE_BADGE_NORMAL)
+            # Verde si hay filtro, Gris si no
+            self.label_pos_stats.setStyleSheet(STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL)
             self.label_pos_stats.setToolTip("")
 
         if is_partial:
