@@ -5,7 +5,7 @@ import chess.polyglot
 import polars as pl
 import gc
 from PySide6.QtCore import QThread, Signal
-from converter import extract_game_data
+from src.converter import extract_game_data
 
 class PGNWorker(QThread):
     progress = Signal(int)

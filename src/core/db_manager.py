@@ -3,7 +3,7 @@ import json
 import time
 import polars as pl
 from datetime import datetime
-from config import CONFIG_FILE
+from src.config import CONFIG_FILE
 from PySide6.QtCore import QObject, Signal
 
 # Rutas del Proyecto

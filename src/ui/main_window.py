@@ -25,22 +25,22 @@ class SortableWidgetItem(QTableWidgetItem):
         except: pass
         return super().__lt__(other)
 
-from config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
-from core.workers import PGNWorker, StatsWorker, PGNExportWorker
-from core.eco import ECOManager
-from core.db_manager import DBManager
-from core.game_controller import GameController
-from ui.board import ChessBoard
-from ui.settings_dialog import SettingsDialog
-from ui.search_dialog import SearchDialog
-from ui.edit_game_dialog import EditGameDialog
-from ui.widgets.results_bar import ResultsWidget
-from ui.widgets.eval_graph import EvaluationGraph
-from ui.widgets.analysis_report import AnalysisReport
-from ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
+from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
+from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker
+from src.core.eco import ECOManager
+from src.core.db_manager import DBManager
+from src.core.game_controller import GameController
+from src.ui.board import ChessBoard
+from src.ui.settings_dialog import SettingsDialog
+from src.ui.search_dialog import SearchDialog
+from src.ui.edit_game_dialog import EditGameDialog
+from src.ui.widgets.results_bar import ResultsWidget
+from src.ui.widgets.eval_graph import EvaluationGraph
+from src.ui.widgets.analysis_report import AnalysisReport
+from src.ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
                        STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
-                       STYLE_BADGE_ERROR)
-from core.engine_worker import EngineWorker, FullAnalysisWorker
+                       STYLE_BADGE_ERROR, STYLE_GAME_HEADER)
+from src.core.engine_worker import EngineWorker, FullAnalysisWorker
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -140,6 +140,15 @@ class MainWindow(QMainWindow):
         
         board_container = QWidget(); board_container_layout = QVBoxLayout(board_container)
         board_container_layout.setContentsMargins(0,0,0,0); board_container_layout.setSpacing(0)
+        
+        # Cabecera de Partida (Jugadores y Evento)
+        self.label_game_header = QLabel("<i>No hay partida cargada</i>")
+        self.label_game_header.setStyleSheet(STYLE_GAME_HEADER)
+        self.label_game_header.setAlignment(Qt.AlignCenter)
+        self.label_game_header.setWordWrap(True)
+        self.label_game_header.setOpenExternalLinks(True) # Permitir links clickables
+        board_container_layout.addWidget(self.label_game_header)
+
         self.toolbar_ana = QToolBar(); self.toolbar_ana.setMovable(False); self.setup_toolbar(self.toolbar_ana)
         board_container_layout.addWidget(self.toolbar_ana)
         
@@ -218,7 +227,7 @@ class MainWindow(QMainWindow):
         act_new_game = QAction(qta.icon('fa5s.file'), "Nueva", self)
         act_new_game.setStatusTip("Limpiar el tablero y los datos para empezar una nueva partida desde cero")
         act_new_game.setToolTip("Limpiar tablero y empezar nueva partida")
-        act_new_game.triggered.connect(lambda: self.game.load_uci_line(""))
+        act_new_game.triggered.connect(self.start_new_game)
         game_actions_toolbar.addAction(act_new_game)
         
         layout_notacion.addWidget(game_actions_toolbar)
@@ -930,9 +939,34 @@ class MainWindow(QMainWindow):
             self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
         self.db_table.resizeColumnsToContents()
 
+    def start_new_game(self):
+        self.game.load_uci_line("")
+        self.label_game_header.setText("<i>Nueva partida (sin datos)</i>")
+
     def load_game_from_list(self, item):
-        game_id = self.db_table.item(item.row(), 0).data(Qt.UserRole); row = self.db.get_game_by_id(self.db.active_db_name, game_id)
-        if row: self.game.load_uci_line(row["full_line"]); self.tabs.setCurrentIndex(0)
+        game_id = self.db_table.item(item.row(), 0).data(Qt.UserRole)
+        row = self.db.get_game_by_id(self.db.active_db_name, game_id)
+        if row:
+            # Cargar jugadas
+            self.game.load_uci_line(row["full_line"])
+            
+            # Preparar link si existe
+            site = row.get('site', '')
+            site_html = f" • <a href='{site}' style='color: #1976d2; text-decoration: none;'>{site}</a>" if site.startswith("http") else f" • {site}" if site else ""
+
+            # Actualizar cabecera con HTML
+            header_html = f"""
+                <div style='font-size: 14px;'>
+                    ⚪ <b>{row['white']}</b> ({row['w_elo']}) vs ⚫ <b>{row['black']}</b> ({row['b_elo']})
+                    <span style='color: #666; margin-left: 10px;'>[{row['result']}]</span>
+                </div>
+                <div style='font-size: 11px; color: #555; margin-top: 4px;'>
+                    {row['event']}{site_html} • {row['date']}
+                </div>
+            """
+            self.label_game_header.setText(header_html)
+            
+            self.tabs.setCurrentIndex(0)
 
     def jump_to_move_link(self, url):
         self.game.jump_to_move(int(url.toString()))

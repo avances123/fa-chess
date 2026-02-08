@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-fa-convert = "src.cli:main"
+fa-chess = "src.main:main"
+fa-chess-convert = "src.cli:main"
 
 [build-system]
 requires = ["hatchling"]

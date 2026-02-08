@@ -42,28 +42,20 @@ def extract_game_data(count, game):
         "result": headers.get("Result", "*"),
         "date": headers.get("Date", "????.??.??"),
         "event": headers.get("Event", "?"),
+        "site": headers.get("Site", ""),
         "line": " ".join(uci_moves[:12]),
         "full_line": " ".join(uci_moves),
-        "fens": hashes # Ahora guardamos una lista de enteros UInt64
+        "fens": hashes 
     }
 
-def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
+def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000):
     """
-    Convierte un PGN a Parquet con total estático.
+    Convierte un PGN a Parquet usando el motor optimizado de Polars.
     """
-    # Contamos primero para tener un total real y estático
     real_total = count_games(pgn_path)
     total_to_process = min(real_total, max_games)
     
     games_data = []
-    
-    # Pre-compilar el bando seguro para Elos
-    def safe_int(val):
-        if not val: return 0
-        try:
-            clean_val = "".join(filter(str.isdigit, str(val)))
-            return int(clean_val) if clean_val else 0
-        except: return 0
 
     with Progress(
         SpinnerColumn(),
@@ -92,7 +84,7 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
                 games_data.append(extract_game_data(count, game))
                 
                 count += 1
-                if count % 100 == 0:
+                if count % 500 == 0:
                     elapsed = time.time() - start_time
                     speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
                     progress.update(task, completed=count, speed=speed)
@@ -103,4 +95,17 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=1000000):
             progress.update(task, completed=count, total=count, speed=speed)
 
     if games_data:
-        pl.DataFrame(games_data).write_parquet(output_path)
+        # Usamos el motor Lazy para la escritura final
+        pl.DataFrame(games_data).lazy().collect().write_parquet(output_path)
+        print(f"\nBase de datos generada con éxito en: {output_path}")
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Uso: uv run src/converter.py <archivo.pgn> [archivo.parquet]")
+        sys.exit(1)
+    
+    input_pgn = sys.argv[1]
+    output_parquet = sys.argv[2] if len(sys.argv) > 2 else input_pgn.replace(".pgn", ".parquet")
+    
+    convert_pgn_to_parquet(input_pgn, output_parquet)
