@@ -147,7 +147,8 @@ class MainWindow(QMainWindow):
         
         # Info Box (Estadísticas y Evaluación)
         info_box = QWidget(); info_layout = QHBoxLayout(info_box); info_layout.setContentsMargins(0, 0, 0, 0)
-        self.label_pos_stats = QLabel("Partidas: 0")
+        self.label_pos_stats = QLabel("0 / 0")
+        self.label_pos_stats.setToolTip("Partidas en esta posición / Total en la base activa")
         self.label_pos_stats.setStyleSheet(STYLE_BADGE_NORMAL); self.label_pos_stats.setAlignment(Qt.AlignCenter)
         self.label_eval = QLabel("")
         self.label_eval.setStyleSheet(STYLE_LABEL_EVAL)
@@ -351,23 +352,24 @@ class MainWindow(QMainWindow):
         self.stats_timer.start(50)
 
     def on_stats_finished(self, res):
-        self.progress.hide(); is_filtered = self.db.current_filter_df is not None
-        total_view = self.db.get_view_count(); opening_name = self.eco.get_opening_name(self.game.current_line_uci)
+        self.progress.hide()
+        is_filtered = self.db.current_filter_df is not None
+        total_view = self.db.get_view_count()
+        opening_name = self.eco.get_opening_name(self.game.current_line_uci)
         
-        # Pasar el board actual para convertir UCI a SAN
+        # Actualizar el árbol (él sí muestra datos de la posición)
         self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view)
         
-        total_pos = 0; is_partial = False
+        is_partial = False
         if res is not None and res.height > 0:
-            total_pos = res.select(pl.sum("c")).item()
             is_partial = "_is_partial" in res.columns and res.row(0, named=True).get("_is_partial")
         
-        txt_pos = format_qty(total_pos); txt_total = format_qty(total_view)
-        self.label_pos_stats.setText(f"Partidas: {txt_pos} de {txt_total}")
-        self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR if is_partial else (STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL))
-
-        if is_partial: self.statusBar().showMessage("⚠️ Árbol parcial. El límite es de 1M de partidas.", 5000)
-        else: self.statusBar().showMessage("Listo", 2000)
+        if is_partial: 
+            self.statusBar().showMessage("⚠️ Árbol parcial. El límite es de 1M de partidas.", 5000)
+            # Solo en caso de árbol parcial mostramos error en el badge
+            self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR)
+        else: 
+            self.statusBar().showMessage("Listo", 2000)
 
     def init_menu(self):
         menubar = self.menuBar()
@@ -595,20 +597,37 @@ class MainWindow(QMainWindow):
         lazy_active = self.db.dbs.get(self.db.active_db_name)
         if lazy_active is None: return
         
-        # Actualizar estado del botón Guardar (Deshabilitar si es Solo Lectura y no es Clipbase)
+        # Actualizar estado del botón Guardar
         is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
         can_save = (not is_readonly) or (self.db.active_db_name == "Clipbase")
         self.btn_save.setEnabled(can_save)
-        self.btn_save.setToolTip("Guardar cambios" if can_save else "Base de solo lectura (usa Clipbase)")
 
-        total_db = self.db.get_active_count(); is_filtered = self.db.current_filter_df is not None; is_inverted = getattr(self, '_just_inverted', False)
-        if not is_filtered:
-            f_total = format_qty(total_db); self.db_sidebar.update_stats(f_total, f_total, "normal"); self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}; df = self.db.get_active_df()
-        else:
-            count = self.db.get_view_count(); f_count = format_qty(count); f_total = format_qty(total_db)
-            state = "error" if is_inverted else "success"; self.db_sidebar.update_stats(f_count, f_total, state)
+        total_db = self.db.get_active_count()
+        is_filtered = self.db.current_filter_df is not None
+        is_inverted = getattr(self, '_just_inverted', False)
+        
+        count = total_db
+        state = "normal"
+        
+        if is_filtered:
+            count = self.db.get_view_count()
+            state = "error" if is_inverted else "success"
             if is_inverted: self._just_inverted = False 
             df = df_to_show if df_to_show is not None else self.db.current_filter_df
+        else:
+            self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}
+            df = self.db.get_active_df()
+
+        # ACTUALIZACIÓN SINCRONIZADA DEL BADGE GLOBAL
+        f_count = format_qty(count)
+        f_total = format_qty(total_db)
+        self.label_pos_stats.setText(f"{f_count} / {f_total}")
+        self.label_pos_stats.setToolTip("Partidas filtradas / Total en la base activa")
+        self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR if state == "error" else (STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL))
+        
+        # También actualizamos el sidebar para mantener coherencia total
+        self.db_sidebar.update_stats(f_count, f_total, state)
+        
         if df is None: return
         disp = df.head(1000); self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
