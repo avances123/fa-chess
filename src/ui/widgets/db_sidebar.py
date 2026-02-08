@@ -24,10 +24,17 @@ class DBSidebar(QWidget):
         
         # Stats Header
         stats_header = QHBoxLayout()
-        stats_header.addWidget(QLabel("<b>Partidas:</b>"))
-        self.label_stats = QLabel("[0/0]")
-        self.label_stats.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.label_stats.setStyleSheet(STYLE_BADGE_NORMAL)
+        stats_header.addWidget(QLabel("<b>Bases:</b>"), 1)
+        
+        from src.ui.utils import ClickableBadge
+        self.label_stats = ClickableBadge("0 / 0")
+        self.label_stats.setMinimumWidth(80)
+        self.label_stats.setAlignment(Qt.AlignCenter)
+        self.label_stats.setStyleSheet(STYLE_BADGE_NORMAL + "border: 1px solid #ccc; padding-left: 8px; padding-right: 8px;")
+        self.label_stats.setCursor(Qt.PointingHandCursor)
+        self.label_stats.setToolTip("Haz clic para filtrar partidas")
+        self.label_stats.clicked.connect(self.search_requested.emit)
+        
         stats_header.addWidget(self.label_stats)
         layout.addLayout(stats_header)
 
@@ -40,7 +47,6 @@ class DBSidebar(QWidget):
         self._add_act('fa5s.plus-circle', '#2e7d32', "Nueva Base", self.new_db_requested.emit)
         self._add_act('fa5s.folder-open', '#1976d2', "Abrir Base Parquet", self.open_db_requested.emit)
         self.toolbar.addSeparator()
-        self._add_act('fa5s.search', None, "Filtrar Partidas", self.search_requested.emit)
         self._add_act('fa5s.exchange-alt', None, "Invertir Filtro", self.invert_filter_requested.emit)
         self._add_act('fa5s.eraser', '#c62828', "Quitar Filtros", self.clear_filter_requested.emit)
         

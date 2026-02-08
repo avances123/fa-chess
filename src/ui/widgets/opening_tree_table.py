@@ -22,11 +22,26 @@ class OpeningTreeTable(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # ECO Label
+        # Cabecera con Nombre de Apertura y Badge Global
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(5, 2, 5, 2)
+        
         self.label_eco = QLabel("...")
-        self.label_eco.setStyleSheet("font-size: 11px; color: #666; font-weight: bold; padding: 2px;")
-        self.label_eco.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.label_eco)
+        self.label_eco.setStyleSheet("font-size: 11px; color: #666; font-weight: bold;")
+        self.label_eco.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        
+        from src.ui.styles import STYLE_BADGE_NORMAL
+        from src.ui.utils import ClickableBadge
+        self.label_global_stats = ClickableBadge("0 / 0")
+        self.label_global_stats.setMinimumWidth(80)
+        self.label_global_stats.setAlignment(Qt.AlignCenter)
+        self.label_global_stats.setStyleSheet(STYLE_BADGE_NORMAL + "border: 1px solid #ccc; padding-left: 8px; padding-right: 8px;")
+        self.label_global_stats.setCursor(Qt.PointingHandCursor)
+        self.label_global_stats.setToolTip("Haz clic para filtrar partidas")
+        
+        header_layout.addWidget(self.label_eco, 1)
+        header_layout.addWidget(self.label_global_stats)
+        layout.addLayout(header_layout)
 
         # Table con las columnas originales
         self.table = QTableWidget(0, 6)

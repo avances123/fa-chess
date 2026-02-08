@@ -110,7 +110,6 @@ class MainWindow(QMainWindow):
             }
             filtered = self.db.filter_db(self.search_criteria)
             self.refresh_db_list(filtered)
-            self.tabs.setCurrentIndex(1)
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -145,14 +144,12 @@ class MainWindow(QMainWindow):
         
         panel_ana = QWidget(); p_ana_layout = QVBoxLayout(panel_ana)
         
-        # Info Box (Estadísticas y Evaluación)
+        # Info Box (Evaluación)
         info_box = QWidget(); info_layout = QHBoxLayout(info_box); info_layout.setContentsMargins(0, 0, 0, 0)
-        self.label_pos_stats = QLabel("0 / 0")
-        self.label_pos_stats.setToolTip("Partidas en esta posición / Total en la base activa")
-        self.label_pos_stats.setStyleSheet(STYLE_BADGE_NORMAL); self.label_pos_stats.setAlignment(Qt.AlignCenter)
         self.label_eval = QLabel("")
         self.label_eval.setStyleSheet(STYLE_LABEL_EVAL)
-        info_layout.addWidget(self.label_pos_stats, 1); info_layout.addWidget(self.label_eval)
+        info_layout.addStretch()
+        info_layout.addWidget(self.label_eval)
         p_ana_layout.addWidget(info_box)
 
         # Árbol de Aperturas
@@ -160,6 +157,7 @@ class MainWindow(QMainWindow):
         self.opening_tree.perf_threshold = self.perf_threshold # Sincronizar configuración
         self.opening_tree.move_selected.connect(lambda uci: self.game.make_move(chess.Move.from_uci(uci)))
         self.opening_tree.move_hovered.connect(self.board_ana.set_hover_move)
+        self.opening_tree.label_global_stats.clicked.connect(self.open_search)
         p_ana_layout.addWidget(self.opening_tree)
         
         self.tabs_side = QTabWidget()
@@ -366,8 +364,8 @@ class MainWindow(QMainWindow):
         
         if is_partial: 
             self.statusBar().showMessage("⚠️ Árbol parcial. El límite es de 1M de partidas.", 5000)
-            # Solo en caso de árbol parcial mostramos error en el badge
-            self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR)
+            # Solo en caso de árbol parcial mostramos error en el badge del árbol
+            self.opening_tree.label_global_stats.setStyleSheet(STYLE_BADGE_ERROR)
         else: 
             self.statusBar().showMessage("Listo", 2000)
 
@@ -591,7 +589,7 @@ class MainWindow(QMainWindow):
             if is_empty: self.reset_filters(); return
             if criteria.get("use_position"):
                 import chess.polyglot; criteria["position_hash"] = chess.polyglot.zobrist_hash(self.game.board)
-            self.search_criteria = criteria; self.db.filter_db(self.search_criteria); self.tabs.setCurrentIndex(1)
+            self.search_criteria = criteria; self.db.filter_db(self.search_criteria)
 
     def refresh_db_list(self, df_to_show=None):
         lazy_active = self.db.dbs.get(self.db.active_db_name)
@@ -621,9 +619,8 @@ class MainWindow(QMainWindow):
         # ACTUALIZACIÓN SINCRONIZADA DEL BADGE GLOBAL
         f_count = format_qty(count)
         f_total = format_qty(total_db)
-        self.label_pos_stats.setText(f"{f_count} / {f_total}")
-        self.label_pos_stats.setToolTip("Partidas filtradas / Total en la base activa")
-        self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR if state == "error" else (STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL))
+        self.opening_tree.label_global_stats.setText(f"{f_count} / {f_total}")
+        self.opening_tree.label_global_stats.setStyleSheet(STYLE_BADGE_ERROR if state == "error" else (STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL))
         
         # También actualizamos el sidebar para mantener coherencia total
         self.db_sidebar.update_stats(f_count, f_total, state)

@@ -1,5 +1,12 @@
-from PySide6.QtWidgets import QTableWidgetItem
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QTableWidgetItem, QLabel
+from PySide6.QtCore import Qt, Signal
+
+class ClickableBadge(QLabel):
+    clicked = Signal()
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 class SortableWidgetItem(QTableWidgetItem):
     """
