@@ -237,6 +237,98 @@ class DBManager(QObject):
         pl.DataFrame(schema=GAME_SCHEMA).write_parquet(path)
         return self.load_parquet(path)
 
+    def get_player_report(self, player_name, eco_manager=None):
+        """Genera un dossier detallado analizando el repertorio por nombres de apertura"""
+        lazy_df = self.get_current_view()
+        if lazy_df is None: return None
+
+        p_df = lazy_df.filter(
+            (pl.col("white") == player_name) | (pl.col("black") == player_name)
+        ).collect()
+
+        if p_df.is_empty(): return None
+
+        # --- ASIGNAR NOMBRES DE APERTURA (Crucial para el resumen) ---
+        if eco_manager:
+            # Asignamos el nombre ECO y la profundidad a cada partida individual
+            opening_data = [eco_manager.get_opening_name(line) for line in p_df["full_line"]]
+            names = [d[0] for d in opening_data]
+            depths = [d[1] for d in opening_data]
+            p_df = p_df.with_columns([
+                pl.Series("opening_name", names),
+                pl.Series("theory_depth", depths)
+            ])
+        else:
+            # Fallback si no hay ECO
+            p_df = p_df.with_columns([
+                pl.col("line").str.slice(0, 20).alias("opening_name"),
+                pl.lit(0).alias("theory_depth")
+            ])
+
+        white_games = p_df.filter(pl.col("white") == player_name)
+        black_games = p_df.filter(pl.col("black") == player_name)
+
+        def get_detailed_stats(df, is_white):
+            if df.is_empty(): return {"w": 0, "d": 0, "b": 0, "total": 0, "avg_opp_elo": 0, "perf": 0}
+            w = (df["result"] == ("1-0" if is_white else "0-1")).sum()
+            d = (df["result"] == "1/2-1/2").sum()
+            b = (df["result"] == ("0-1" if is_white else "1-0")).sum()
+            total = df.height
+            opp_elo_col = "b_elo" if is_white else "w_elo"
+            avg_opp_elo = df.select(pl.col(opp_elo_col)).filter(pl.col(opp_elo_col) > 0).mean().item() or 0
+            score = (w + 0.5 * d) / total if total > 0 else 0.5
+            perf = avg_opp_elo + (score - 0.5) * 800
+            return {"w": int(w), "d": int(d), "b": int(b), "total": total, "avg_opp_elo": int(avg_opp_elo), "perf": int(perf)}
+
+        def get_repertoire(df, is_white):
+            if df.is_empty(): return []
+            
+            return (df.group_by("opening_name")
+                    .agg([
+                        pl.len().alias("count"),
+                        ((pl.col("result") == ("1-0" if is_white else "0-1")).sum() + 
+                         (pl.col("result") == "1/2-1/2").sum() * 0.5).alias("points"),
+                        pl.col("theory_depth").mean().alias("avg_depth"),
+                        pl.col("full_line").first().alias("sample_line")
+                    ])
+                    .with_columns((pl.col("points") / pl.col("count") * 100).alias("win_rate"))
+                    .sort("count", descending=True)
+                    .head(15)
+                    .to_dicts())
+
+        stats = {
+            "name": player_name,
+            "as_white": get_detailed_stats(white_games, True),
+            "as_black": get_detailed_stats(black_games, False),
+            "top_white": get_repertoire(white_games, True),
+            "top_black": get_repertoire(black_games, False),
+            "elo_history": (p_df.select(["date", pl.when(pl.col("white") == player_name).then(pl.col("w_elo")).otherwise(pl.col("b_elo")).alias("elo")])
+                           .filter(pl.col("elo") > 0).sort("date").to_dicts()),
+        }
+
+        # 5. MEJORES VICTORIAS (Por ELO del oponente)
+        wins = p_df.filter(
+            ((pl.col("white") == player_name) & (pl.col("result") == "1-0")) |
+            ((pl.col("black") == player_name) & (pl.col("result") == "0-1"))
+        )
+        stats["best_wins"] = (wins.with_columns(
+            pl.when(pl.col("white") == player_name).then(pl.col("b_elo")).otherwise(pl.col("w_elo")).alias("opp_elo"),
+            pl.when(pl.col("white") == player_name).then(pl.col("black")).otherwise(pl.col("white")).alias("opp_name")
+        ).sort("opp_elo", descending=True).head(5).to_dicts())
+
+        # 6. PEORES DERROTAS (Derrotas contra ELO más bajo)
+        losses = p_df.filter(
+            ((pl.col("white") == player_name) & (pl.col("result") == "0-1")) |
+            ((pl.col("black") == player_name) & (pl.col("result") == "1-0"))
+        )
+        stats["worst_losses"] = (losses.with_columns(
+            pl.when(pl.col("white") == player_name).then(pl.col("b_elo")).otherwise(pl.col("w_elo")).alias("opp_elo"),
+            pl.when(pl.col("white") == player_name).then(pl.col("black")).otherwise(pl.col("white")).alias("opp_name")
+        ).filter(pl.col("opp_elo") > 0).sort("opp_elo", descending=False).head(5).to_dicts())
+
+        stats["max_elo"] = max([x["elo"] for x in stats["elo_history"]] or [0])
+        return stats
+
     def delete_database_from_disk(self, name):
         """Elimina físicamente el archivo de base de datos y lo quita de la memoria"""
         if name in self.db_metadata:

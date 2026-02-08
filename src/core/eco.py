@@ -60,13 +60,13 @@ class ECOManager:
 
     def get_opening_name(self, current_line_uci):
         if not current_line_uci:
-            return "Posición Inicial"
+            return "Posición Inicial", 0
             
         # Buscamos la coincidencia más específica
         for line_uci, name in self.openings:
-            # Comprobamos si la línea actual empieza con la línea del ECO
-            # o si la línea del ECO empieza con la actual (coincidencia parcial)
             if current_line_uci.startswith(line_uci):
-                return name
+                # Devolvemos el nombre y el número de jugadas (UCI / 2 aprox, pero usamos palabras UCI)
+                depth = len(line_uci.split())
+                return name, depth
                 
-        return "Variante Desconocida"
+        return "Variante Desconocida", 0

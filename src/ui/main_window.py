@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QProgressBar, QHeaderView, QTextBrowser, 
                              QStatusBar, QTabWidget, QListWidget, QListWidgetItem, QMenu, 
                              QColorDialog, QMenuBar, QAbstractItemView, QToolBar, 
-                             QStyle, QSizePolicy, QMessageBox, QApplication)
+                             QStyle, QSizePolicy, QMessageBox, QApplication, QLineEdit, QTabBar)
 from PySide6.QtCore import Qt, QPointF, QTimer, QSize
 from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QColor, QBrush
 import qtawesome as qta
@@ -23,6 +23,7 @@ from src.ui.board import ChessBoard
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.search_dialog import SearchDialog
 from src.ui.edit_game_dialog import EditGameDialog
+from src.ui.player_report_widget import PlayerReportWidget
 from src.ui.widgets.results_bar import ResultsWidget
 from src.ui.widgets.eval_graph import EvaluationGraph
 from src.ui.widgets.analysis_report import AnalysisReport
@@ -74,6 +75,7 @@ class MainWindow(QMainWindow):
         self.init_shortcuts()
         self.update_ui()
         self.tabs.setCurrentIndex(1) # Arrancar en la pestaña de Gestor de Bases
+        self._fix_tab_buttons()
         self.statusBar().showMessage("Listo")
 
     def init_shortcuts(self):
@@ -115,6 +117,13 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.close_tab)
+        
+        # Ocultar botones de cierre en las pestañas fijas
+        self.tabs.tabBar().setTabButton(0, QTabBar.RightSide, None)
+        self.tabs.tabBar().setTabButton(1, QTabBar.RightSide, None)
+        
         self.setCentralWidget(self.tabs)
         table_font = QFont("monospace", 9)
 
@@ -293,7 +302,18 @@ class MainWindow(QMainWindow):
         return table
 
     def setup_toolbar(self, toolbar):
-        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly); left_spacer = QWidget(); left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(left_spacer)
+        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        
+        # BUSCADOR DE JUGADORES
+        self.search_player_input = QLineEdit()
+        self.search_player_input.setPlaceholderText("Analizar Jugador...")
+        self.search_player_input.setMaximumWidth(200)
+        self.search_player_input.returnPressed.connect(lambda: self.show_player_report(self.search_player_input.text()))
+        toolbar.addWidget(QLabel("  🔍 "))
+        toolbar.addWidget(self.search_player_input)
+        toolbar.addSeparator()
+
+        left_spacer = QWidget(); left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(left_spacer)
         self.action_search_pos = QAction(qta.icon('fa5s.crosshairs'), "", self); self.action_search_pos.setStatusTip("Buscar partidas con esta posición"); self.action_search_pos.triggered.connect(self.search_current_position); toolbar.addAction(self.action_search_pos); toolbar.addSeparator()
         actions = [(qta.icon('fa5s.step-backward'), self.game.go_start, "Inicio"), (qta.icon('fa5s.chevron-left'), self.game.step_back, "Anterior"), (qta.icon('fa5s.chevron-right'), self.game.step_forward, "Siguiente"), (qta.icon('fa5s.step-forward'), self.game.go_end, "Final"), (None, None, None), (qta.icon('fa5s.retweet'), self.flip_boards, "Girar Tablero")]
         for icon, func, tip in actions:
@@ -357,7 +377,9 @@ class MainWindow(QMainWindow):
         self.progress.hide()
         is_filtered = self.db.current_filter_df is not None
         total_view = self.db.get_view_count()
-        opening_name = self.eco.get_opening_name(self.game.current_line_uci)
+        
+        # get_opening_name ahora devuelve (nombre, profundidad)
+        opening_name, _ = self.eco.get_opening_name(self.game.current_line_uci)
         
         # Actualizar el árbol (él sí muestra datos de la posición)
         self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view)
@@ -379,7 +401,14 @@ class MainWindow(QMainWindow):
         settings_action = QAction(qta.icon('fa5s.cog'), "&Configuración...", self); settings_action.triggered.connect(self.open_settings); file_menu.addAction(settings_action); file_menu.addSeparator()
         exit_action = QAction(qta.icon('fa5s.power-off'), "&Salir", self); exit_action.setShortcut("Ctrl+Q"); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
         db_menu = menubar.addMenu("&Bases de Datos")
-        new_db_action = QAction(qta.icon('fa5s.plus-circle', color='#2e7d32'), "Nueva Base &Vacía...", self); new_db_action.setShortcut("Ctrl+N"); new_db_action.triggered.connect(self.create_new_db); db_menu.addAction(new_db_action)
+        
+        report_action = QAction(qta.icon('fa5s.chart-bar', color='#673ab7'), "Dossier de &Jugador...", self)
+        report_action.setShortcut("Ctrl+D")
+        report_action.triggered.connect(self.prompt_player_report)
+        db_menu.addAction(report_action)
+        db_menu.addSeparator()
+
+        new_db_action = QAction(qta.icon('fa5s.plus-circle', color='#2e7d32'), "Nueva Base &Vacía...", self)
         open_parquet_action = QAction(qta.icon('fa5s.folder-open'), "Abrir Base &Parquet...", self); open_parquet_action.setShortcut("Ctrl+O"); open_parquet_action.triggered.connect(self.open_parquet_file); db_menu.addAction(open_parquet_action)
         open_pgn_action = QAction(qta.icon('fa5s.file-import', color='#1976d2'), "Importar &PGN...", self); open_pgn_action.setShortcut("Ctrl+I"); open_pgn_action.triggered.connect(self.import_pgn); db_menu.addAction(open_pgn_action); db_menu.addSeparator()
         filter_action = QAction(qta.icon('fa5s.search'), "&Filtrar Partidas...", self); filter_action.setShortcut("Ctrl+F"); filter_action.triggered.connect(self.open_search); db_menu.addAction(filter_action)
@@ -474,12 +503,93 @@ class MainWindow(QMainWindow):
                 if self.db.active_db_name == "Clipbase": self.db.set_active_db("Clipbase")
 
     def on_db_table_context_menu(self, pos):
-        menu = QMenu(); copy_action = QAction(qta.icon('fa5s.copy'), "📋 Copiar Partida a...", self); copy_action.triggered.connect(self.copy_selected_game); menu.addAction(copy_action)
-        edit_action = QAction(qta.icon('fa5s.edit'), "📝 Editar Datos Partida", self); edit_action.triggered.connect(self.edit_selected_game); menu.addAction(edit_action)
+        row_idx = self.db_table.currentRow()
+        if row_idx < 0: return
+        
+        white_player = self.db_table.item(row_idx, 2).text()
+        black_player = self.db_table.item(row_idx, 4).text()
+
+        menu = QMenu()
+        
+        # Acciones de Informe de Jugador
+        report_white = QAction(qta.icon('fa5s.user', color='#1976d2'), f"Informe de {white_player}", self)
+        report_white.triggered.connect(lambda: self.show_player_report(white_player))
+        menu.addAction(report_white)
+        
+        report_black = QAction(qta.icon('fa5s.user', color='#555'), f"Informe de {black_player}", self)
+        report_black.triggered.connect(lambda: self.show_player_report(black_player))
+        menu.addAction(report_black)
+        
+        menu.addSeparator()
+        
+        copy_action = QAction(qta.icon('fa5s.copy'), "📋 Copiar Partida a...", self)
+        copy_action.triggered.connect(self.copy_selected_game)
+        menu.addAction(copy_action)
+
+        edit_action = QAction(qta.icon('fa5s.edit'), "📝 Editar Datos Partida", self)
+        edit_action.triggered.connect(self.edit_selected_game)
+        menu.addAction(edit_action)
+
         is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
         if not is_readonly or self.db.active_db_name == "Clipbase":
-            menu.addSeparator(); del_action = QAction(qta.icon('fa5s.trash-alt'), "❌ Eliminar Partida", self); del_action.triggered.connect(self.delete_selected_game); menu.addAction(del_action)
+            menu.addSeparator()
+            del_action = QAction(qta.icon('fa5s.trash-alt'), "❌ Eliminar Partida", self)
+            del_action.triggered.connect(self.delete_selected_game)
+            menu.addAction(del_action)
+
         menu.exec(self.db_table.viewport().mapToGlobal(pos))
+
+    def _fix_tab_buttons(self):
+        """Elimina físicamente los botones de cierre de las pestañas fijas"""
+        for i in [0, 1]:
+            for side in [QTabBar.LeftSide, QTabBar.RightSide]:
+                btn = self.tabs.tabBar().tabButton(i, side)
+                if btn:
+                    btn.hide()
+                    self.tabs.tabBar().setTabButton(i, side, None)
+
+    def prompt_player_report(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Dossier de Jugador", "Introduce el nombre exacto del jugador:")
+        if ok and name:
+            self.show_player_report(name)
+
+    def close_tab(self, index):
+        # Impedir cerrar las dos pestañas principales (Tablero y Gestor)
+        if index > 1:
+            self.tabs.removeTab(index)
+
+    def show_player_report(self, player_name):
+        if not player_name: return
+        self.statusBar().showMessage(f"Generando dossier de inteligencia para {player_name}...")
+        
+        # Mostrar barra de progreso en modo pulso
+        self.progress.setRange(0, 0)
+        self.progress.show()
+        
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents() 
+        try:
+            stats = self.db.get_player_report(player_name, eco_manager=self.eco)
+            
+            # Ocultar barra y restaurar cursor
+            self.progress.hide()
+            QApplication.restoreOverrideCursor()
+            
+            if stats:
+                report_w = PlayerReportWidget(stats, self)
+                idx = self.tabs.addTab(report_w, qta.icon('fa5s.chart-bar'), f"Dossier: {player_name}")
+                self._fix_tab_buttons()
+                self.tabs.setCurrentIndex(idx)
+                self.statusBar().showMessage(f"Dossier de {player_name} listo.", 3000)
+            else:
+                self.statusBar().showMessage("Informe cancelado: datos insuficientes.", 3000)
+                QMessageBox.information(self, "Informe de Jugador", f"No se han encontrado suficientes datos para {player_name}")
+        except Exception as e:
+            self.progress.hide()
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage(f"Error al generar informe: {e}", 5000)
+            QMessageBox.critical(self, "Error", f"Error al generar el informe: {e}")
 
     def toggle_db_readonly(self, item, status):
         name = item.text()
