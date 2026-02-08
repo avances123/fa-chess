@@ -19,17 +19,45 @@ def main_window(qtbot, monkeypatch):
         return window
 
 def test_signal_flow_filter_updates_ui(main_window, qtbot):
-    """Verifica que el flujo de señales entre DBManager y MainWindow funciona"""
+    """Verifica que el flujo de señales actualiza la UI y los colores de los Badges"""
+    from ui.styles import STYLE_BADGE_SUCCESS, STYLE_BADGE_NORMAL
     
-    # Mockeamos refresh_db_list para ver si la señal lo llama
+    # 1. Estado inicial: Debería estar en gris (Normal)
+    assert main_window.label_eco.styleSheet() == STYLE_BADGE_NORMAL
+    
+    # 2. Mockeamos refresh_db_list
     main_window.refresh_db_list = MagicMock()
     
-    # Disparamos la señal de filtro desde el manager
-    main_window.db.filter_updated.emit(None)
+    # 3. Simulamos la aplicación de un filtro (emitiendo la señal que emitiría el DBManager)
+    # Creamos un mock de DataFrame para que refresh_db_list no falle
+    mock_df = MagicMock()
+    main_window.db.current_filter_df = mock_df
+    main_window.db.filter_updated.emit(mock_df)
     
-    # Verificamos que MainWindow reaccionó a la señal
+    # 4. Verificamos que MainWindow reaccionó
     assert main_window.refresh_db_list.called
     assert main_window.run_stats_worker.called
+    
+    # 5. Verificamos que el color cambió a verde (Success)
+    assert main_window.label_eco.styleSheet() == STYLE_BADGE_SUCCESS
+    assert main_window.label_db_stats.styleSheet() == STYLE_BADGE_SUCCESS
+
+def test_reset_filters_restores_colors(main_window, qtbot):
+    """Verifica que al resetear los filtros los colores vuelven a gris"""
+    from ui.styles import STYLE_BADGE_SUCCESS, STYLE_BADGE_NORMAL
+    
+    # 1. Forzamos un estado filtrado (verde)
+    main_window.db.current_filter_df = MagicMock()
+    main_window.update_stats()
+    assert main_window.label_eco.styleSheet() == STYLE_BADGE_SUCCESS
+    
+    # 2. Ejecutamos el reset
+    main_window.reset_filters()
+    
+    # 3. Verificamos que vuelve a gris
+    assert main_window.db.current_filter_df is None
+    assert main_window.label_eco.styleSheet() == STYLE_BADGE_NORMAL
+    assert main_window.label_db_stats.styleSheet() == STYLE_BADGE_NORMAL
 
 def test_search_dialog_presets(main_window, qtbot):
     """Verifica que los nuevos botones de preset funcionan en el diálogo"""

@@ -105,16 +105,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Búsqueda por Posición", f"La base '{self.db.active_db_name}' no tiene el índice de posiciones.\n\nPor favor, vuelve a abrir el archivo PGN original para re-importarla.")
             return
         
-        # Guardamos el estado completo para que la Lupa lo reconozca
-        self.search_criteria = {
-            "white": "", "black": "", "min_elo": "", "result": "Cualquiera", 
-            "position_hash": pos_hash,
-            "use_position": True
-        }
-        
-        filtered = self.db.filter_db(self.search_criteria)
-        self.refresh_db_list(filtered)
-        self.tabs.setCurrentIndex(1)
+        # Feedback visual de inicio
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.progress.setRange(0, 0)
+        self.progress.show()
+        self.statusBar().showMessage("Buscando posición en la base de datos...")
+        QApplication.processEvents() # Forzar dibujado antes del cálculo pesado
+
+        try:
+            # Guardamos el estado completo para que la Lupa lo reconozca
+            self.search_criteria = {
+                "white": "", "black": "", "min_elo": "", "result": "Cualquiera", 
+                "position_hash": pos_hash,
+                "use_position": True
+            }
+            
+            filtered = self.db.filter_db(self.search_criteria)
+            self.refresh_db_list(filtered)
+            self.tabs.setCurrentIndex(1)
+        finally:
+            QApplication.restoreOverrideCursor()
+            # La barra de progreso se ocultará cuando on_stats_finished termine su trabajo
+            # No la ocultamos aquí para que el flujo sea continuo del filtro al árbol
 
     def init_ui(self):
         self.tabs = QTabWidget()
@@ -903,10 +915,11 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(1)
 
     def refresh_db_list(self, df_to_show=None):
-        df = df_to_show if isinstance(df_to_show, pl.DataFrame) else self.db.get_active_df()
-        if df is None: return
+        lazy_active = self.db.dbs.get(self.db.active_db_name)
+        if lazy_active is None: return
         
-        total_db = self.db.get_active_df().height
+        # Obtenemos el total real de la base activa (muy rápido en Lazy)
+        total_db = self.db.get_active_count()
         is_filtered = self.db.current_filter_df is not None
         is_inverted = getattr(self, '_just_inverted', False)
 
@@ -915,18 +928,24 @@ class MainWindow(QMainWindow):
             self.label_db_stats.setText(f"[{f_total}/{f_total}]")
             self.label_db_stats.setStyleSheet(STYLE_BADGE_NORMAL)
             self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}
+            df = self.db.get_active_df() # Head 1000
         else:
-            count = df_to_show.height if df_to_show is not None else df.height
+            # Obtenemos el total real del filtro (muy rápido en Lazy)
+            count = self.db.get_view_count()
             f_count = self.format_qty(count)
             f_total = self.format_qty(total_db)
             self.label_db_stats.setText(f"[{f_count}/{f_total}]")
             
             if is_inverted:
                 self.label_db_stats.setStyleSheet(STYLE_BADGE_ERROR)
-                self._just_inverted = False # Reset flag tras aplicar estilo
+                self._just_inverted = False 
             else:
                 self.label_db_stats.setStyleSheet(STYLE_BADGE_SUCCESS)
+            
+            # Usamos la vista previa para la tabla
+            df = df_to_show if df_to_show is not None else self.db.current_filter_df
         
+        if df is None: return
         disp = df.head(1000); self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
             self.db_table.setItem(i, 0, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 1, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 2, QTableWidgetItem(str(r["w_elo"]))); self.db_table.setItem(i, 3, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 4, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 5, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
@@ -1018,22 +1037,30 @@ class MainWindow(QMainWindow):
             except: pass
 
     def run_stats_worker(self):
-        # Si ya hay un worker corriendo, lo desconectamos para que sus resultados tarde
-        # no pisen a los del nuevo que vamos a lanzar. No usamos wait() para no colgar la UI.
+        # 1. Gestionar hilos anteriores para evitar el error "Destroyed while running"
+        if not hasattr(self, '_active_workers'):
+            self._active_workers = []
+            
+        # Limpiar referencias a hilos que ya terminaron
+        self._active_workers = [w for w in self._active_workers if w.isRunning()]
+        
+        # Si el hilo principal está corriendo, lo desconectamos del resultado
         if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
             try:
                 self.stats_worker.finished.disconnect()
+                # Lo movemos a la lista de huérfanos para que no sea destruido por Python
+                self._active_workers.append(self.stats_worker)
             except: pass
         
-        # Mostrar carga en barra global
+        # 2. Preparar el nuevo cálculo
         self.progress.setRange(0, 0)
         self.progress.show()
-        self.statusBar().showMessage("Calculando estadísticas de la posición...")
+        self.statusBar().showMessage("Calculando estadísticas...")
         
-        # Calcular hash actual
         import chess.polyglot
         current_hash = chess.polyglot.zobrist_hash(self.game.board)
         
+        # 3. Lanzar el nuevo Worker
         self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash)
         self.stats_worker.finished.connect(self.on_stats_finished)
         self.stats_worker.start()
@@ -1066,9 +1093,8 @@ class MainWindow(QMainWindow):
             total_pos = res.select(pl.sum("c")).item()
             is_partial = "_is_partial" in res.columns and res.row(0, named=True).get("_is_partial")
         
-        # Obtener total de la VISTA actual
-        current_view = self.db.get_current_view()
-        total_view = current_view.height if current_view is not None else 0
+        # Obtener total de la VISTA actual (consulta completa)
+        total_view = self.db.get_view_count()
         
         # Formatear números
         txt_pos = self.format_qty(total_pos)
