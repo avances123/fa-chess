@@ -76,10 +76,17 @@ class StatsWorker(QThread):
                     pl.col("full_line").str.split(" ").alias("_m"),
                     pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")
                 ])
+                # FILTRO DE SEGURIDAD: Solo procesar si el índice tiene una jugada siguiente en la lista _m
+                .filter(pl.col("_i") < pl.col("_m").list.len())
                 .with_columns(
                     pl.col("_m").list.get(pl.col("_i")).alias("uci")
                 )
-                .filter(pl.col("uci").is_not_null() & (pl.col("uci") != ""))
+                # FILTRO DE CALIDAD: Solo jugadas UCI válidas (e2e4, e7e8q, etc)
+                .filter(
+                    pl.col("uci").is_not_null() & 
+                    (pl.col("uci").str.len_chars() >= 4) &
+                    (pl.col("uci").str.len_chars() <= 5)
+                )
                 .group_by("uci")
                 .agg([
                     pl.len().alias("c"),

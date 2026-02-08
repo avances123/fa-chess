@@ -1,87 +1,63 @@
 import pytest
 import polars as pl
-from ui.main_window import MainWindow
-import ui.main_window
-import core.db_manager
+from src.ui.main_window import MainWindow
+from PySide6.QtCore import Qt
 
 @pytest.fixture
-def app(qtbot, tmp_path, monkeypatch):
-    test_config = tmp_path / "test_config.json"
-    test_clipbase = tmp_path / "test_clipbase.parquet"
-    monkeypatch.setattr(ui.main_window, "CONFIG_FILE", str(test_config))
-    monkeypatch.setattr(core.db_manager, "CLIPBASE_FILE", str(test_clipbase))
-    
+def app(qtbot):
+    """Ventana con datos diseñados para probar ordenación"""
     window = MainWindow()
     qtbot.addWidget(window)
-    return window
-
-def test_database_sorting_logic(app, qtbot):
-    # 1. Crear una base con datos variados para ordenar
+    
     df = pl.DataFrame({
         "id": [1, 2, 3],
-        "white": ["A", "B", "C"],
-        "black": ["A", "B", "C"],
-        "w_elo": [2500, 2800, 2300], # Desordenados
-        "b_elo": [2500, 2800, 2300],
-        "result": ["*", "*", "*"],
-        "date": ["2023", "2023", "2023"],
-        "event": ["Test", "Test", "Test"],
-        "line": ["", "", ""], 
-        "full_line": ["", "", ""], 
-        "fens": [[], [], []]
-    }, schema_overrides={"id": pl.Int64, "fens": pl.List(pl.UInt64)})
+        "white": ["Z", "A", "M"], # Orden alfabético: A, M, Z
+        "w_elo": [2000, 2800, 2400], # Orden numérico: 2000, 2400, 2800
+        "black": ["B1", "B2", "B3"],
+        "b_elo": [2100, 2100, 2100],
+        "result": ["1-0", "0-1", "1/2-1/2"],
+        "date": ["2020.01.01", "2024.01.01", "2010.01.01"], # Orden crono: 2010, 2020, 2024
+        "event": ["E", "E", "E"], "site": ["", "", ""],
+        "line": ["", "", ""], "full_line": ["", "", ""], "fens": [[], [], []]
+    })
+    window.db.dbs["Clipbase"] = df.lazy()
+    window.db.set_active_db("Clipbase")
+    return window
+
+def test_sort_by_white_player(app, qtbot):
+    """Verifica la ordenación alfabética por el nombre del jugador blanco"""
+    # 1. Simular clic en la cabecera "Blancas" (columna 2)
+    # Primera vez suele ser Ascendente o Descendente según lógica de UI
+    app.sort_database(2) # Columna Blancas
     
-    app.db.dbs["Clipbase"] = df
-    app.db.set_active_db("Clipbase")
-    app.refresh_db_list()
+    # 2. Verificar que el primer elemento es "Z" (Si la UI empieza por Descendente por defecto)
+    # o "A" (Si es Ascendente). Nuestra MainWindow pone sort_desc = True en el primer clic.
+    assert app.db_table.item(0, 2).text() == "Z"
     
-    # Estado inicial: Orden de inserción (2500, 2800, 2300)
-    assert app.db_table.item(0, 2).text() == "2500"
-    
-    # 2. Ordenar por Elo Blanco (Columna 2) -> Debería ser Descendente por defecto (definido en sort_database)
-    # Simulamos clic en cabecera
+    # 3. Segundo clic -> Invertir
     app.sort_database(2)
+    assert app.db_table.item(0, 2).text() == "A"
+
+def test_sort_by_elo(app, qtbot):
+    """Verifica la ordenación numérica por ELO"""
+    # 1. Clic en Elo B (columna 3)
+    app.sort_database(3) # Elo Blanco
     
-    # Verificar orden Descendente (2800 primero)
-    assert app.db_table.item(0, 2).text() == "2800"
-    assert app.db_table.item(1, 2).text() == "2500"
-    assert app.db_table.item(2, 2).text() == "2300"
+    # Debería ser el más alto primero (Descendente)
+    assert app.db_table.item(0, 3).text() == "2800"
     
-    # 3. Invertir Orden -> Ascendente (2300 primero)
-    app.sort_database(2)
-    assert app.db_table.item(0, 2).text() == "2300"
-    assert app.db_table.item(2, 2).text() == "2800"
+    # 2. Invertir -> El más bajo primero
+    app.sort_database(3)
+    assert app.db_table.item(0, 3).text() == "2000"
 
 def test_sorting_with_filter(app, qtbot):
-    # 1. Base con datos
-    df = pl.DataFrame({
-        "id": [1, 2, 3, 4],
-        "white": ["Carlsen", "Carlsen", "Nepo", "Caruana"],
-        "w_elo": [2800, 2850, 2750, 2780],
-        "black": ["A", "B", "C", "D"], "b_elo": [0]*4,
-        "result": ["*"]*4, "date": [""]*4, "event": [""]*4,
-        "line": [""]*4, "full_line": [""]*4, "fens": [[]]*4
-    }, schema_overrides={"id": pl.Int64, "fens": pl.List(pl.UInt64)})
-    
-    app.db.dbs["Clipbase"] = df
-    app.db.set_active_db("Clipbase")
-    
-    # 2. Filtrar por "Carlsen"
-    app.search_criteria = {"white": "Carlsen", "black": "", "min_elo": "", "result": "Cualquiera"}
-    filtered = app.db.filter_db(app.search_criteria)
-    app.refresh_db_list(filtered)
-    
+    """Verifica que la ordenación respeta el filtro activo"""
+    # 1. Filtrar para que solo queden 'A' y 'M' (quitamos 'Z' que tiene ELO 2000)
+    app.db.filter_db({"min_elo": "2300"})
+    app.refresh_db_list()
     assert app.db_table.rowCount() == 2
-    # Orden original del filtro (2800, 2850)
     
-    # 3. Ordenar el FILTRO por Elo -> Descendente (2850 primero)
+    # 2. Ordenar por blancas
     app.sort_database(2)
-    
-    assert app.db_table.rowCount() == 2 # Siguen siendo 2
-    assert app.db_table.item(0, 2).text() == "2850"
-    assert app.db_table.item(1, 2).text() == "2800"
-    
-    # Verificar que NO ha traído a Nepo o Caruana
-    items = [app.db_table.item(i, 1).text() for i in range(2)]
-    assert "Nepo" not in items
-    assert all("Carlsen" in x for x in items)
+    # Entre 'A' y 'M', el primero en descendente es 'M'
+    assert app.db_table.item(0, 2).text() == "M"

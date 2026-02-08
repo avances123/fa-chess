@@ -189,3 +189,27 @@ class DBManager(QObject):
 
     def get_view_count(self):
         return self.current_view_count
+
+    def create_new_database(self, path):
+        """Crea un archivo parquet vacío con el esquema de ajedrez estándar"""
+        schema = {
+            "id": pl.Int64, "white": pl.String, "black": pl.String, 
+            "w_elo": pl.Int64, "b_elo": pl.Int64, "result": pl.String, 
+            "date": pl.String, "event": pl.String, "site": pl.String,
+            "line": pl.String, "full_line": pl.String, "fens": pl.List(pl.UInt64)
+        }
+        pl.DataFrame(schema=schema).write_parquet(path)
+        return self.load_parquet(path)
+
+    def delete_database_from_disk(self, name):
+        """Elimina físicamente el archivo de base de datos y lo quita de la memoria"""
+        if name in self.db_metadata:
+            path = self.db_metadata[name]["path"]
+            try:
+                if os.path.exists(path): os.remove(path)
+                del self.dbs[name]
+                del self.db_metadata[name]
+                if self.active_db_name == name: self.set_active_db("Clipbase")
+                return True
+            except: return False
+        return False
