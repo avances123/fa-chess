@@ -65,3 +65,22 @@ STYLE_GAME_HEADER = """
         font-family: 'Segoe UI', sans-serif;
     }
 """
+
+STYLE_ACTION_BUTTON = """
+    QPushButton {
+        background-color: #ffffff;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        padding: 6px 12px;
+        color: #495057;
+        font-weight: bold;
+        font-size: 11px;
+    }
+    QPushButton:hover {
+        background-color: #e9ecef;
+        border-color: #adb5bd;
+    }
+    QPushButton:pressed {
+        background-color: #dee2e6;
+    }
+"""

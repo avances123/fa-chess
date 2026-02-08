@@ -32,7 +32,7 @@ from src.ui.widgets.opening_tree_table import OpeningTreeTable
 from src.ui.utils import format_qty
 from src.ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
                        STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
-                       STYLE_BADGE_ERROR, STYLE_GAME_HEADER)
+                       STYLE_BADGE_ERROR, STYLE_GAME_HEADER, STYLE_ACTION_BUTTON)
 from src.core.engine_worker import EngineWorker, FullAnalysisWorker
 
 class MainWindow(QMainWindow):
@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         self.init_menu()
         self.init_shortcuts()
         self.update_ui()
+        self.tabs.setCurrentIndex(1) # Arrancar en la pestaña de Gestor de Bases
         self.statusBar().showMessage("Listo")
 
     def init_shortcuts(self):
@@ -165,15 +166,32 @@ class MainWindow(QMainWindow):
         self.hist_ana = QTextBrowser(); self.hist_ana.setOpenLinks(False); self.hist_ana.anchorClicked.connect(self.jump_to_move_link)
         layout_notacion.addWidget(self.hist_ana)
         
-        game_actions_toolbar = QToolBar(); game_actions_toolbar.setIconSize(QSize(16, 16)); game_actions_toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        game_actions_toolbar.setStyleSheet("QToolBar { spacing: 10px; background: #f5f5f5; border-top: 1px solid #ddd; padding: 2px; }")
+        # Barra de Acciones de Partida (Mejorada)
+        game_actions_layout = QHBoxLayout()
+        game_actions_layout.setContentsMargins(5, 5, 5, 5)
+        game_actions_layout.setSpacing(8)
         
-        act_save_active = QAction(qta.icon('fa5s.save', color='#1976d2'), "Guardar", self); act_save_active.triggered.connect(self.save_to_active_db); game_actions_toolbar.addAction(act_save_active)
-        act_save_clip = QAction(qta.icon('fa5s.clipboard', color='#2e7d32'), "a Clipbase", self); act_save_clip.triggered.connect(self.add_to_clipbase); game_actions_toolbar.addAction(act_save_clip)
-        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); game_actions_toolbar.addWidget(spacer)
-        act_new_game = QAction(qta.icon('fa5s.file'), "Nueva", self); act_new_game.triggered.connect(self.start_new_game); game_actions_toolbar.addAction(act_new_game)
+        self.btn_save = QPushButton(qta.icon('fa5s.save', color='#1976d2'), " Guardar")
+        self.btn_save.setStyleSheet(STYLE_ACTION_BUTTON)
+        self.btn_save.setToolTip("Guardar cambios en la base activa")
+        self.btn_save.clicked.connect(self.save_to_active_db)
         
-        layout_notacion.addWidget(game_actions_toolbar)
+        self.btn_clip = QPushButton(qta.icon('fa5s.clipboard', color='#2e7d32'), " a Clipbase")
+        self.btn_clip.setStyleSheet(STYLE_ACTION_BUTTON)
+        self.btn_clip.setToolTip("Copiar esta partida a la Clipbase")
+        self.btn_clip.clicked.connect(self.add_to_clipbase)
+        
+        self.btn_new = QPushButton(qta.icon('fa5s.file-alt', color='#555'), " Nueva")
+        self.btn_new.setStyleSheet(STYLE_ACTION_BUTTON)
+        self.btn_new.setToolTip("Empezar una nueva partida")
+        self.btn_new.clicked.connect(self.start_new_game)
+        
+        game_actions_layout.addWidget(self.btn_save)
+        game_actions_layout.addWidget(self.btn_clip)
+        game_actions_layout.addStretch()
+        game_actions_layout.addWidget(self.btn_new)
+        
+        layout_notacion.addLayout(game_actions_layout)
         self.tabs_side.addTab(tab_notacion, qta.icon('fa5s.list-ol'), "Notación")
         
         tab_grafico = QWidget(); layout_grafico = QVBoxLayout(tab_grafico); layout_grafico.setContentsMargins(0,0,0,0)
@@ -183,7 +201,8 @@ class MainWindow(QMainWindow):
         self.analysis_report = AnalysisReport(); self.tabs_side.addTab(self.analysis_report, qta.icon('fa5s.chart-pie'), "Informe")
         p_ana_layout.addWidget(self.tabs_side)
         
-        btn_analyze = QPushButton(qta.icon('fa5s.magic'), " Analizar Partida Completa")
+        btn_analyze = QPushButton(qta.icon('fa5s.magic', color='#673ab7'), " Analizar Partida Completa")
+        btn_analyze.setStyleSheet(STYLE_ACTION_BUTTON)
         btn_analyze.clicked.connect(self.start_full_analysis)
         p_ana_layout.addWidget(btn_analyze)
         
@@ -539,6 +558,13 @@ class MainWindow(QMainWindow):
     def refresh_db_list(self, df_to_show=None):
         lazy_active = self.db.dbs.get(self.db.active_db_name)
         if lazy_active is None: return
+        
+        # Actualizar estado del botón Guardar (Deshabilitar si es Solo Lectura y no es Clipbase)
+        is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
+        can_save = (not is_readonly) or (self.db.active_db_name == "Clipbase")
+        self.btn_save.setEnabled(can_save)
+        self.btn_save.setToolTip("Guardar cambios" if can_save else "Base de solo lectura (usa Clipbase)")
+
         total_db = self.db.get_active_count(); is_filtered = self.db.current_filter_df is not None; is_inverted = getattr(self, '_just_inverted', False)
         if not is_filtered:
             f_total = format_qty(total_db); self.db_sidebar.update_stats(f_total, f_total, "normal"); self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}; df = self.db.get_active_df()

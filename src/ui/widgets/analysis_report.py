@@ -104,27 +104,27 @@ class AnalysisReport(QWidget):
             is_white = (i % 2 == 0)
             player = "white" if is_white else "black"
             
-            eval_pre = evaluations[i]
-            eval_post = evaluations[i+1]
+            # Saturar evaluaciones a +/- 1000 (10.0) para que errores en posiciones 
+            # totalmente ganadas/perdidas no distorsionen el ACPL.
+            eval_pre = max(-1000, min(1000, evaluations[i]))
+            eval_post = max(-1000, min(1000, evaluations[i+1]))
             
             # Calcular pérdida (Loss) siempre positiva
             if is_white:
-                # Blancas pierden si la evaluación baja
                 loss = max(0, eval_pre - eval_post)
             else:
-                # Negras pierden si la evaluación sube (se hace más positiva para blancas)
                 loss = max(0, eval_post - eval_pre)
             
             # Acumular para ACPL
             stats[player]["loss_sum"] += loss
             stats[player]["moves"] += 1
             
-            # Categorizar Error
-            if loss >= 300: # Blunder > 3.00 (ajustable) o > 100cp en Lichess clásico
+            # Categorizar Error (Estándares competitivos)
+            if loss >= 200:   # Blunder > 2.00
                 stats[player]["blunders"] += 1
-            elif loss >= 100: # Mistake
+            elif loss >= 90:  # Mistake > 0.90
                 stats[player]["mistakes"] += 1
-            elif loss >= 50: # Inaccuracy
+            elif loss >= 40:  # Inaccuracy > 0.40
                 stats[player]["inaccuracies"] += 1
 
         # Calcular finales y actualizar UI
@@ -133,11 +133,10 @@ class AnalysisReport(QWidget):
             moves = max(1, s["moves"])
             acpl = s["loss_sum"] / moves
             
-            # Fórmula de Precisión (Aprox Lichess)
-            # accuracy = 103 - (1.5 * ACPL) (Simplificación muy burda pero visual)
-            # Mejor usar la exponencial: 100 * exp(-0.0004 * acpl)
+            # Fórmula de Precisión ajustada (Aprox. realismo competitivo)
+            # 0 ACPL -> 100% | 20 ACPL -> 90% | 50 ACPL -> 77% | 100 ACPL -> 60%
             import math
-            accuracy = 100 * math.exp(-0.0004 * acpl)
+            accuracy = 100 * math.exp(-0.005 * acpl)
             
             self.labels[f"{color}_inaccuracies"].setText(str(s["inaccuracies"]))
             self.labels[f"{color}_mistakes"].setText(str(s["mistakes"]))
