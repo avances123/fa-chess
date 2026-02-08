@@ -5,6 +5,22 @@ import os
 import time
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
+# Esquema unificado (debe coincidir con DBManager)
+GAME_SCHEMA = {
+    "id": pl.Int64, 
+    "white": pl.String, 
+    "black": pl.String, 
+    "w_elo": pl.Int64, 
+    "b_elo": pl.Int64, 
+    "result": pl.String, 
+    "date": pl.String, 
+    "event": pl.String, 
+    "site": pl.String,
+    "line": pl.String, 
+    "full_line": pl.String, 
+    "fens": pl.List(pl.UInt64)
+}
+
 def count_games(pgn_path):
     """Cuenta rápidamente las partidas buscando el tag [Event ]"""
     count = 0
@@ -48,14 +64,15 @@ def extract_game_data(count, game):
         "fens": hashes 
     }
 
-def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000):
+def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000, chunk_size=10000):
     """
-    Convierte un PGN a Parquet usando el motor optimizado de Polars.
+    Convierte un PGN a Parquet procesando por chunks para optimizar memoria.
     """
     real_total = count_games(pgn_path)
     total_to_process = min(real_total, max_games)
     
-    games_data = []
+    dfs = [] # Lista de DataFrames de Polars (más eficiente que lista de dicts)
+    current_chunk = []
 
     with Progress(
         SpinnerColumn(),
@@ -81,23 +98,32 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000):
                 if game is None:
                     break
                 
-                games_data.append(extract_game_data(count, game))
-                
+                current_chunk.append(extract_game_data(count, game))
                 count += 1
-                if count % 500 == 0:
+                
+                # Procesar por chunks para liberar memoria de Python
+                if len(current_chunk) >= chunk_size:
+                    dfs.append(pl.DataFrame(current_chunk, schema=GAME_SCHEMA))
+                    current_chunk = []
+                    
                     elapsed = time.time() - start_time
                     speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
                     progress.update(task, completed=count, speed=speed)
 
-            # Finalización
+            # Finalización del último chunk
+            if current_chunk:
+                dfs.append(pl.DataFrame(current_chunk, schema=GAME_SCHEMA))
+            
             elapsed = time.time() - start_time
             speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
             progress.update(task, completed=count, total=count, speed=speed)
 
-    if games_data:
-        # Usamos el motor Lazy para la escritura final
-        pl.DataFrame(games_data).lazy().collect().write_parquet(output_path)
-        print(f"\nBase de datos generada con éxito en: {output_path}")
+    if dfs:
+        print(f"\nConcatenando {len(dfs)} bloques y escribiendo Parquet...")
+        # Polars es extremadamente rápido concatenando DataFrames con el mismo esquema
+        final_df = pl.concat(dfs)
+        final_df.write_parquet(output_path)
+        print(f"Base de datos generada con éxito en: {output_path}")
 
 if __name__ == "__main__":
     import sys

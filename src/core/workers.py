@@ -17,23 +17,13 @@ class PGNWorker(QThread):
         self.path = path
 
     def run(self):
-        games = []
-        file_size = os.path.getsize(self.path)
+        from src.converter import convert_pgn_to_parquet
         try:
-            with open(self.path, encoding="utf-8", errors="ignore") as pgn:
-                count = 0
-                while True:
-                    game = chess.pgn.read_game(pgn)
-                    if not game: break
-                    
-                    games.append(extract_game_data(count, game))
-                    count += 1
-                    if count % 100 == 0:
-                        self.progress.emit(int((pgn.tell() / file_size) * 100))
-                        self.status.emit(f"Cargando partida {count}...")
-            
             out = self.path.replace(".pgn", ".parquet")
-            pl.DataFrame(games).write_parquet(out)
+            # Delegamos en la función optimizada de converter.py
+            # Nota: Podríamos envolver la Progress de rich, pero por ahora 
+            # lo mantenemos simple o refactorizamos convert_pgn_to_parquet para aceptar un callback
+            convert_pgn_to_parquet(self.path, out)
             self.finished.emit(out)
         except Exception as e:
             self.status.emit(f"Error: {e}")
@@ -54,13 +44,13 @@ class StatsWorker(QThread):
                 self.finished.emit(None)
                 return
 
-            # 1. Intentar obtener de la caché de RAM (Instantáneo)
+            # 1. Intentar obtener de la caché de RAM
             cached = self.db.get_cached_stats(self.current_hash)
             if cached is not None:
                 self.finished.emit(cached)
                 return
 
-            # 2. Cálculo dinámico OPTIMIZADO con Polars Streaming
+            # 2. Cálculo dinámico con Polars
             lazy_view = self.db.get_current_view()
             if lazy_view is None:
                 self.finished.emit(None)
@@ -68,7 +58,7 @@ class StatsWorker(QThread):
 
             target = int(self.current_hash)
             
-            # Algoritmo de extracción nativa en C++
+            # Expresión de Polars optimizada
             q = (
                 lazy_view
                 .filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64)))
@@ -76,36 +66,35 @@ class StatsWorker(QThread):
                     pl.col("full_line").str.split(" ").alias("_m"),
                     pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")
                 ])
-                # FILTRO DE SEGURIDAD: Solo procesar si el índice tiene una jugada siguiente en la lista _m
+                # Solo procesar si hay una jugada después de la posición actual
                 .filter(pl.col("_i") < pl.col("_m").list.len())
                 .with_columns(
                     pl.col("_m").list.get(pl.col("_i")).alias("uci")
                 )
-                # FILTRO DE CALIDAD: Solo jugadas UCI válidas (e2e4, e7e8q, etc)
+                # Validar longitud de UCI (normalmente 4 o 5 caracteres)
                 .filter(
-                    pl.col("uci").is_not_null() & 
-                    (pl.col("uci").str.len_chars() >= 4) &
+                    (pl.col("uci").str.len_chars() >= 4) & 
                     (pl.col("uci").str.len_chars() <= 5)
                 )
                 .group_by("uci")
                 .agg([
                     pl.len().alias("c"),
-                    pl.col("result").filter(pl.col("result") == "1-0").len().alias("w"),
-                    pl.col("result").filter(pl.col("result") == "1/2-1/2").len().alias("d"),
-                    pl.col("result").filter(pl.col("result") == "0-1").len().alias("b"),
-                    pl.mean("w_elo").fill_null(0).alias("avg_w_elo"),
-                    pl.mean("b_elo").fill_null(0).alias("avg_b_elo")
+                    (pl.col("result") == "1-0").sum().alias("w"),
+                    (pl.col("result") == "1/2-1/2").sum().alias("d"),
+                    (pl.col("result") == "0-1").sum().alias("b"),
+                    pl.col("w_elo").mean().fill_null(0).alias("avg_w_elo"),
+                    pl.col("b_elo").mean().fill_null(0).alias("avg_b_elo")
                 ])
                 .sort("c", descending=True)
             )
             
-            # Ejecución en streaming (mínimo consumo RAM)
+            # Ejecución optimizada
             stats = q.collect(streaming=True)
             
             # Enriquecemos con metadatos
             stats = stats.with_columns(pl.lit(False).alias("_is_partial"))
             
-            # Guardamos en caché para el resto de la sesión
+            # Guardamos en caché
             self.db.cache_stats(self.current_hash, stats)
             self.finished.emit(stats)
 

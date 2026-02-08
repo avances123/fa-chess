@@ -434,10 +434,16 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QInputDialog
         target_db, ok = QInputDialog.getItem(self, "Copiar Partida", "Selecciona la base de datos destino:", writable_dbs, 0, False)
         if ok and target_db:
-            game_data["id"] = int(time.time() * 1000); schema = self.db.dbs[target_db].collect_schema()
-            clean_data = {k: game_data[k] for k in schema.names()}
-            if target_db == "Clipbase": self.db.add_to_clipbase(clean_data)
-            else: self.db.dbs[target_db] = pl.concat([self.db.dbs[target_db], pl.DataFrame([clean_data], schema=schema).lazy()])
+            from src.core.db_manager import GAME_SCHEMA
+            game_data["id"] = int(time.time() * 1000)
+            clean_data = {k: game_data[k] for k in GAME_SCHEMA.keys() if k in game_data}
+            
+            if target_db == "Clipbase": 
+                self.db.add_to_clipbase(clean_data)
+            else: 
+                new_row = pl.DataFrame([clean_data], schema=GAME_SCHEMA).lazy()
+                self.db.dbs[target_db] = pl.concat([self.db.dbs[target_db], new_row])
+                
             self.statusBar().showMessage(f"Partida copiada a '{target_db}'", 3000)
             if self.db.active_db_name == target_db: self.db.set_active_db(target_db)
 
@@ -486,14 +492,44 @@ class MainWindow(QMainWindow):
         else: lock_action = QAction(qta.icon('fa5s.lock'), " Poner Solo Lectura", self); lock_action.triggered.connect(lambda: self.toggle_db_readonly(item, True)); menu.addAction(lock_action)
         menu.addSeparator(); remove_action = QAction(qta.icon('fa5s.times', color='red'), " Quitar de la lista", self); remove_action.triggered.connect(lambda: self.remove_database(item)); menu.addAction(remove_action); menu.exec(self.db_sidebar.list_widget.mapToGlobal(pos))
 
+    def remove_database(self, item):
+        name = item.text()
+        if name in self.db.dbs:
+            del self.db.dbs[name]
+            if name in self.db.db_metadata: del self.db.db_metadata[name]
+            self.db_sidebar.list_widget.takeItem(self.db_sidebar.list_widget.row(item))
+            if self.db.active_db_name == name: self.db.set_active_db("Clipbase")
+            self.save_config()
+            self.statusBar().showMessage(f"Base '{name}' quitada de la lista", 3000)
+
     def save_to_active_db(self):
         db_name = self.db.active_db_name; is_readonly = self.db.db_metadata.get(db_name, {}).get("read_only", True)
         if is_readonly and db_name != "Clipbase": QMessageBox.warning(self, "Base de Solo Lectura", f"La base '{db_name}' es de solo lectura. Prueba a guardar en Clipbase."); return
         line_uci = self.game.current_line_uci; import chess.polyglot; board = chess.Board(); hashes = [chess.polyglot.zobrist_hash(board)]
         for move in self.game.full_mainline: board.push(move); hashes.append(chess.polyglot.zobrist_hash(board))
-        game_data = {"id": int(time.time() * 1000), "white": "Jugador Blanco", "black": "Jugador Negro", "w_elo": 2500, "b_elo": 2500, "result": "*", "date": datetime.now().strftime("%Y.%m.%d"), "event": "Análisis Local", "site": "", "line": " ".join([m.uci() for m in self.game.full_mainline[:12]]), "full_line": line_uci, "fens": hashes}
-        if db_name == "Clipbase": self.db.add_to_clipbase(game_data)
-        else: df = self.db.get_active_df(); self.db.dbs[db_name] = pl.concat([df, pl.DataFrame([game_data], schema=df.schema)])
+        
+        from src.core.db_manager import GAME_SCHEMA
+        game_data = {
+            "id": int(time.time() * 1000), 
+            "white": "Jugador Blanco", 
+            "black": "Jugador Negro", 
+            "w_elo": 2500, 
+            "b_elo": 2500, 
+            "result": "*", 
+            "date": datetime.now().strftime("%Y.%m.%d"), 
+            "event": "Análisis Local", 
+            "site": "", 
+            "line": " ".join([m.uci() for m in self.game.full_mainline[:12]]), 
+            "full_line": line_uci, 
+            "fens": hashes
+        }
+        
+        if db_name == "Clipbase": 
+            self.db.add_to_clipbase(game_data)
+        else: 
+            new_row = pl.DataFrame([game_data], schema=GAME_SCHEMA).lazy()
+            self.db.dbs[db_name] = pl.concat([self.db.dbs[db_name], new_row])
+            
         self.db.set_active_db(db_name); self.statusBar().showMessage(f"Partida guardada en {db_name}", 3000)
 
     def export_filter_to_pgn(self):
