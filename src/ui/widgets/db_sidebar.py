@@ -7,7 +7,7 @@ from src.ui.styles import STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, STYLE_BADGE_E
 class DBSidebar(QWidget):
     # Signals to communicate with MainWindow
     new_db_requested = Signal()
-    import_pgn_requested = Signal()
+    open_db_requested = Signal()
     search_requested = Signal()
     invert_filter_requested = Signal()
     clear_filter_requested = Signal()
@@ -38,7 +38,7 @@ class DBSidebar(QWidget):
         self.toolbar.setStyleSheet("QToolBar { spacing: 5px; background: transparent; border: none; }")
         
         self._add_act('fa5s.plus-circle', '#2e7d32', "Nueva Base", self.new_db_requested.emit)
-        self._add_act('fa5s.file-import', '#1976d2', "Importar PGN", self.import_pgn_requested.emit)
+        self._add_act('fa5s.folder-open', '#1976d2', "Abrir Base Parquet", self.open_db_requested.emit)
         self.toolbar.addSeparator()
         self._add_act('fa5s.search', None, "Filtrar Partidas", self.search_requested.emit)
         self._add_act('fa5s.exchange-alt', None, "Invertir Filtro", self.invert_filter_requested.emit)

@@ -29,6 +29,7 @@ from src.ui.widgets.analysis_report import AnalysisReport
 from src.ui.widgets.game_info_header import GameInfoHeader
 from src.ui.widgets.db_sidebar import DBSidebar
 from src.ui.widgets.opening_tree_table import OpeningTreeTable
+from src.ui.utils import format_qty
 from src.ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
                        STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
                        STYLE_BADGE_ERROR, STYLE_GAME_HEADER)
@@ -154,6 +155,7 @@ class MainWindow(QMainWindow):
 
         # Árbol de Aperturas
         self.opening_tree = OpeningTreeTable()
+        self.opening_tree.perf_threshold = self.perf_threshold # Sincronizar configuración
         self.opening_tree.move_selected.connect(lambda uci: self.game.make_move(chess.Move.from_uci(uci)))
         self.opening_tree.move_hovered.connect(self.board_ana.set_hover_move)
         p_ana_layout.addWidget(self.opening_tree)
@@ -194,7 +196,7 @@ class MainWindow(QMainWindow):
         self.db_sidebar = DBSidebar()
         self.db_sidebar.add_db_item("Clipbase", is_clipbase=True)
         self.db_sidebar.new_db_requested.connect(self.create_new_db)
-        self.db_sidebar.import_pgn_requested.connect(self.import_pgn)
+        self.db_sidebar.open_db_requested.connect(self.open_parquet_file)
         self.db_sidebar.search_requested.connect(self.open_search)
         self.db_sidebar.invert_filter_requested.connect(self.trigger_invert_filter)
         self.db_sidebar.clear_filter_requested.connect(self.reset_filters)
@@ -331,15 +333,17 @@ class MainWindow(QMainWindow):
 
     def on_stats_finished(self, res):
         self.progress.hide(); is_filtered = self.db.current_filter_df is not None
-        total_view = self.db.get_view_count(); opening_name = self.eco.get_opening_name(self.game.current_line_uci); is_white = self.game.board.turn == chess.WHITE
-        self.opening_tree.update_tree(res, is_white, opening_name, is_filtered, total_view)
+        total_view = self.db.get_view_count(); opening_name = self.eco.get_opening_name(self.game.current_line_uci)
+        
+        # Pasar el board actual para convertir UCI a SAN
+        self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view)
         
         total_pos = 0; is_partial = False
         if res is not None and res.height > 0:
             total_pos = res.select(pl.sum("c")).item()
             is_partial = "_is_partial" in res.columns and res.row(0, named=True).get("_is_partial")
         
-        txt_pos = self.format_qty(total_pos); txt_total = self.format_qty(total_view)
+        txt_pos = format_qty(total_pos); txt_total = format_qty(total_view)
         self.label_pos_stats.setText(f"Partidas: {txt_pos} de {txt_total}")
         self.label_pos_stats.setStyleSheet(STYLE_BADGE_ERROR if is_partial else (STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL))
 
@@ -537,9 +541,9 @@ class MainWindow(QMainWindow):
         if lazy_active is None: return
         total_db = self.db.get_active_count(); is_filtered = self.db.current_filter_df is not None; is_inverted = getattr(self, '_just_inverted', False)
         if not is_filtered:
-            f_total = self.format_qty(total_db); self.db_sidebar.update_stats(f_total, f_total, "normal"); self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}; df = self.db.get_active_df()
+            f_total = format_qty(total_db); self.db_sidebar.update_stats(f_total, f_total, "normal"); self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "use_position": False}; df = self.db.get_active_df()
         else:
-            count = self.db.get_view_count(); f_count = self.format_qty(count); f_total = self.format_qty(total_db)
+            count = self.db.get_view_count(); f_count = format_qty(count); f_total = format_qty(total_db)
             state = "error" if is_inverted else "success"; self.db_sidebar.update_stats(f_count, f_total, state)
             if is_inverted: self._just_inverted = False 
             df = df_to_show if df_to_show is not None else self.db.current_filter_df
@@ -549,19 +553,34 @@ class MainWindow(QMainWindow):
             self.db_table.setItem(i, 0, QTableWidgetItem(str(r["id"]))); self.db_table.setItem(i, 1, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 2, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 3, QTableWidgetItem(str(r["w_elo"]))); self.db_table.setItem(i, 4, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 5, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 6, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
         self.db_table.resizeColumnsToContents()
 
-    def format_qty(self, n, precise=False):
-        if precise: return f"{n:,}".replace(",", ".")
-        if n >= 1_000_000: return f"{n/1_000_000:.2f}M".replace(".00M", "M")
-        if n >= 1_000: return f"{n/1_000:.1f}k".replace(".0k", "k")
-        return str(n)
-
     def save_config(self):
-        dbs_info = [{"path": m["path"]} for m in self.db.db_metadata.values() if m.get("path")]; colors = {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark}; config = {"dbs": dbs_info, "colors": colors}; json.dump(config, open(CONFIG_FILE, "w"))
+        dbs_info = [{"path": m["path"]} for m in self.db.db_metadata.values() if m.get("path")]
+        colors = {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark}
+        
+        config = {
+            "perf_threshold": getattr(self, 'perf_threshold', 25),
+            "colors": colors,
+            "dbs": dbs_info
+        }
+        
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
 
     def load_config(self):
         self.def_light, self.def_dark = "#eeeed2", "#8ca2ad"
+        self.perf_threshold = 25
         if os.path.exists(CONFIG_FILE):
             try:
-                data = json.load(open(CONFIG_FILE, "r")); self.pending_dbs = [info["path"] if isinstance(info, dict) else info for info in data.get("dbs", [])]; colors = data.get("colors")
-                if colors: self.def_light = colors.get("light", self.def_light); self.def_dark = colors.get("dark", self.def_dark)
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.pending_dbs = [info["path"] if isinstance(info, dict) else info for info in data.get("dbs", [])]
+                colors = data.get("colors")
+                if colors:
+                    self.def_light = colors.get("light", self.def_light)
+                    self.def_dark = colors.get("dark", self.def_dark)
+                
+                self.perf_threshold = data.get("perf_threshold", 25)
+                # Sincronizar con el widget si ya existe
+                if hasattr(self, 'opening_tree'):
+                    self.opening_tree.perf_threshold = self.perf_threshold
             except: pass

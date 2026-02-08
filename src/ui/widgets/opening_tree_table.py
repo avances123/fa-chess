@@ -1,10 +1,13 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 import polars as pl
 import chess
 from src.ui.styles import STYLE_TABLE_HEADER
+from src.ui.widgets.results_bar import ResultsWidget
+from src.ui.utils import SortableWidgetItem
+from src.core.utils import uci_to_san
 
 class OpeningTreeTable(QWidget):
     move_selected = Signal(str) # uci
@@ -12,6 +15,7 @@ class OpeningTreeTable(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.perf_threshold = 25 # Valor por defecto, se actualizará desde MainWindow
         self.init_ui()
 
     def init_ui(self):
@@ -24,20 +28,20 @@ class OpeningTreeTable(QWidget):
         self.label_eco.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.label_eco)
 
-        # Table
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Jugada", "Partidas", "1-0", "1/2", "0-1"])
+        # Table con las columnas originales
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Movim.", "Frec.", "Barra", "Win %", "AvElo", "Perf"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(20)
+        self.table.verticalHeader().setDefaultSectionSize(22)
         self.table.setStyleSheet(STYLE_TABLE_HEADER)
         
-        # Header behavior
+        # Configuración de cabeceras
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for i in range(1, 5):
+        for i in range(1, 6):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
         
         self.table.itemDoubleClicked.connect(self._on_double_click)
@@ -45,49 +49,72 @@ class OpeningTreeTable(QWidget):
         
         layout.addWidget(self.table)
 
-    def update_tree(self, stats_df, is_white_turn, opening_name, is_filtered=False, total_view_count=0):
-        """Actualiza la tabla con los resultados del StatsWorker."""
+    def update_tree(self, stats_df, current_board, opening_name, is_filtered=False, total_view_count=0):
         self.label_eco.setText(opening_name if opening_name else "Posición desconocida")
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         
         if stats_df is None or stats_df.height == 0:
             return
 
+        is_white_turn = current_board.turn == chess.WHITE
         self.table.setRowCount(stats_df.height)
-        for i, row in enumerate(stats_df.rows(named=True)):
-            # Convertir UCI a SAN para mostrar (más legible)
-            try:
-                # Necesitamos un board temporal para SAN, pero el worker ya nos da UCI
-                # Por ahora mostramos UCI para ser rápidos, o simplificamos
-                move_str = row["uci"] 
-            except:
-                move_str = row["uci"]
+        for i, r in enumerate(stats_df.rows(named=True)):
+            # 1. Movimiento (Usar utilidad central para SAN)
+            move_text = uci_to_san(current_board, r["uci"])
 
-            # Porcentajes
-            c = row["c"]
-            pct_w = (row["w"] / c * 100)
-            pct_d = (row["d"] / c * 100)
-            pct_b = (row["b"] / c * 100)
-
-            self._set_item(i, 0, move_str, Qt.AlignCenter, bold=True)
-            self._set_item(i, 1, f"{c}", Qt.AlignCenter)
-            self._set_item(i, 2, f"{pct_w:.1f}%", Qt.AlignCenter, color="#2e7d32")
-            self._set_item(i, 3, f"{pct_d:.1f}%", Qt.AlignCenter, color="#666")
-            self._set_item(i, 4, f"{pct_b:.1f}%", Qt.AlignCenter, color="#c62828")
-            
-            # Guardar UCI en el primer item para recuperarlo al hacer click
-            self.table.item(i, 0).setData(Qt.UserRole, row["uci"])
-
-    def _set_item(self, row, col, text, align, bold=False, color=None):
-        item = QTableWidgetItem(text)
-        item.setTextAlignment(align)
-        if bold:
-            font = item.font()
+            it_move = QTableWidgetItem(move_text)
+            it_move.setData(Qt.UserRole, r["uci"]) # Guardamos UCI para la lógica interna
+            it_move.setTextAlignment(Qt.AlignCenter)
+            font = it_move.font()
             font.setBold(True)
-            item.setFont(font)
-        if color:
-            item.setForeground(QColor(color))
-        self.table.setItem(row, col, item)
+            it_move.setFont(font)
+            self.table.setItem(i, 0, it_move)
+
+            # 2. Frecuencia
+            it_count = SortableWidgetItem(f"{r['c']:,}".replace(",", "."))
+            it_count.setData(Qt.UserRole, r["c"])
+            it_count.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 1, it_count)
+
+            # 3. Barra de resultados (Widget)
+            self.table.setCellWidget(i, 2, ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white_turn))
+
+            # 4. Win %
+            win_rate = ((r["w"] + 0.5 * r["d"]) / r["c"] if is_white_turn else (r["b"] + 0.5 * r["d"]) / r["c"]) * 100
+            it_win = SortableWidgetItem(f"{win_rate:.1f}%")
+            it_win.setData(Qt.UserRole, win_rate)
+            it_win.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(i, 3, it_win)
+
+            # 5. AvElo (Elo medio del bando que mueve)
+            av_elo = int(r["avg_w_elo"] if is_white_turn else r["avg_b_elo"])
+            it_elo = SortableWidgetItem(str(av_elo))
+            it_elo.setData(Qt.UserRole, av_elo)
+            it_elo.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 4, it_elo)
+
+            # 6. Perf (Performance y lógica de colores)
+            score = (r["w"] + 0.5 * r["d"]) / r["c"] if is_white_turn else (r["b"] + 0.5 * r["d"]) / r["c"]
+            opponent_elo = r["avg_b_elo"] if is_white_turn else r["avg_w_elo"]
+            perf = int(opponent_elo + (score - 0.5) * 800)
+            
+            it_perf = SortableWidgetItem(str(perf))
+            it_perf.setData(Qt.UserRole, perf)
+            it_perf.setTextAlignment(Qt.AlignCenter)
+            
+            # Lógica de colores comparando Perf con AvElo usando el umbral configurable
+            if perf > av_elo + self.perf_threshold:
+                it_perf.setForeground(QColor("#2e7d32")) # Verde
+            elif perf < av_elo - self.perf_threshold:
+                it_perf.setForeground(QColor("#c62828")) # Rojo
+            else:
+                it_perf.setForeground(QColor("#000000")) # Negro
+            
+            self.table.setItem(i, 5, it_perf)
+
+        self.table.setSortingEnabled(True)
+        self.table.sortByColumn(1, Qt.DescendingOrder) # Ordenar por frecuencia por defecto
 
     def _on_double_click(self, item):
         uci = self.table.item(item.row(), 0).data(Qt.UserRole)

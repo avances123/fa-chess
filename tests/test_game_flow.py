@@ -49,7 +49,7 @@ def wait_for_ui(qtbot):
     qtbot.wait(600)
 
 def test_tree_updates_on_move(app, qtbot):
-    """Verifica que al mover e2e4, el árbol muestra e7e5 y c7c5"""
+    """Verifica que al mover e2e4, el árbol muestra e5 y c5 (notación SAN)"""
     app.game.make_move(chess.Move.from_uci("e2e4"))
     wait_for_ui(qtbot)
     
@@ -58,8 +58,8 @@ def test_tree_updates_on_move(app, qtbot):
         item = app.opening_tree.table.item(r, 0)
         if item: moves_found.append(item.text())
     
-    assert "e7e5" in moves_found
-    assert "c7c5" in moves_found
+    assert "e5" in moves_found
+    assert "c5" in moves_found
 
 def test_make_move_from_tree(app, qtbot):
     """Verifica que hacer clic en el árbol mueve la pieza correctamente"""
