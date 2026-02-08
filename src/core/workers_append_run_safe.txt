@@ -1,0 +1,52 @@
+    def run(self):
+        import tempfile
+        import os
+        temp_parquet = None
+        try:
+            # 1. Convertir PGN nuevo a un Parquet temporal
+            self.status.emit("Convirtiendo PGN nuevo...")
+            temp_dir = tempfile.gettempdir()
+            temp_parquet = os.path.join(temp_dir, f"new_games_{os.getpid()}.parquet")
+            
+            from src.converter import convert_pgn_to_parquet
+            convert_pgn_to_parquet(self.pgn_path, temp_parquet, progress_callback=self.progress.emit)
+
+            # 2. Fusionar con la base existente
+            self.status.emit("Preparando fusión de bases...")
+            
+            from src.core.db_manager import GAME_SCHEMA
+            
+            # Escaneo con esquema estricto
+            old_lf = pl.scan_parquet(self.target_path).cast(GAME_SCHEMA)
+            new_lf = pl.scan_parquet(temp_parquet).cast(GAME_SCHEMA)
+            
+            # Ajuste de IDs (esto es rápido y seguro)
+            max_id_res = old_lf.select(pl.col("id").max()).collect()
+            max_id = max_id_res.item() if not max_id_res.is_empty() and max_id_res.item() is not None else 0
+            new_lf = new_lf.with_columns(pl.col("id") + max_id + 1)
+
+            # CONCATENACIÓN DIRECTA (Eliminamos unique temporalmente para garantizar estabilidad)
+            final_tmp = self.target_path + ".tmp"
+            self.status.emit("Escribiendo base de datos unificada...")
+            
+            # Concatenamos y escribimos (collect sin streaming para asegurar integridad en este paso)
+            pl.concat([old_lf, new_lf]).collect().write_parquet(final_tmp)
+
+            # Reemplazo seguro
+            if os.path.exists(self.target_path):
+                os.remove(self.target_path)
+            os.rename(final_tmp, self.target_path)
+            
+            if temp_parquet and os.path.exists(temp_parquet): 
+                os.remove(temp_parquet)
+
+            self.status.emit("Fusión completada con éxito.")
+            self.finished.emit()
+            
+        except Exception as e:
+            print(f"DEBUG: Error en PGNAppendWorker: {e}")
+            self.status.emit(f"Error en fusión: {e}")
+            if temp_parquet and os.path.exists(temp_parquet):
+                try: os.remove(temp_parquet)
+                except: pass
+            self.finished.emit()

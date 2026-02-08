@@ -64,14 +64,14 @@ def extract_game_data(count, game):
         "fens": hashes 
     }
 
-def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000, chunk_size=10000):
+def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000, chunk_size=10000, progress_callback=None):
     """
     Convierte un PGN a Parquet procesando por chunks para optimizar memoria.
     """
     real_total = count_games(pgn_path)
     total_to_process = min(real_total, max_games)
     
-    dfs = [] # Lista de DataFrames de Polars (más eficiente que lista de dicts)
+    dfs = [] # Lista de DataFrames de Polars
     current_chunk = []
 
     with Progress(
@@ -81,6 +81,7 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000, chunk_size
         TextColumn("[blue]{task.completed}/{task.total} games"),
         TextColumn("[green]{task.fields[speed]} g/s"),
         TimeElapsedColumn(),
+        disable=False # Siempre visible en CLI
     ) as progress:
         
         task = progress.add_task(
@@ -101,22 +102,26 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000, chunk_size
                 current_chunk.append(extract_game_data(count, game))
                 count += 1
                 
-                # Procesar por chunks para liberar memoria de Python
                 if len(current_chunk) >= chunk_size:
                     dfs.append(pl.DataFrame(current_chunk, schema=GAME_SCHEMA))
                     current_chunk = []
                     
                     elapsed = time.time() - start_time
                     speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
+                    
+                    # Actualizar AMBAS barras
+                    if progress_callback:
+                        progress_callback(int((count / total_to_process) * 100))
+                    
                     progress.update(task, completed=count, speed=speed)
 
-            # Finalización del último chunk
             if current_chunk:
                 dfs.append(pl.DataFrame(current_chunk, schema=GAME_SCHEMA))
             
-            elapsed = time.time() - start_time
-            speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
-            progress.update(task, completed=count, total=count, speed=speed)
+            if progress_callback:
+                progress_callback(100)
+            
+            progress.update(task, completed=count, total=count)
 
     if dfs:
         print(f"\nConcatenando {len(dfs)} bloques y escribiendo Parquet...")

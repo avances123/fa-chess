@@ -54,6 +54,22 @@ class SearchDialog(QDialog):
         data_layout.addWidget(self.result_combo)
         criteria_layout.addLayout(data_layout)
 
+        # Fechas
+        date_layout = QHBoxLayout()
+        self.date_from = QLineEdit()
+        self.date_from.setPlaceholderText("Desde (AAAA.MM.DD)")
+        self.date_from.setInputMask("0000.00.00")
+        
+        self.date_to = QLineEdit()
+        self.date_to.setPlaceholderText("Hasta (AAAA.MM.DD)")
+        self.date_to.setInputMask("0000.00.00")
+        
+        date_layout.addWidget(QLabel("Fecha:"))
+        date_layout.addWidget(self.date_from)
+        date_layout.addWidget(QLabel("-"))
+        date_layout.addWidget(self.date_to)
+        criteria_layout.addLayout(date_layout)
+
         main_layout.addWidget(criteria_group)
 
         # --- SECCIÓN 3: FILTRO POR POSICIÓN ---
@@ -98,6 +114,8 @@ class SearchDialog(QDialog):
         self.white_input.clear()
         self.black_input.clear()
         self.min_elo_input.clear()
+        self.date_from.clear()
+        self.date_to.clear()
         self.result_combo.setCurrentIndex(0)
         self.pos_check.setChecked(False)
         self.white_input.setFocus() # Devolver el foco al primer campo
@@ -108,10 +126,16 @@ class SearchDialog(QDialog):
         self.accept() # Cerramos aplicando los campos vacíos
 
     def get_criteria(self):
+        # Limpiamos las fechas si están incompletas (solo tienen los puntos de la máscara)
+        d_from = self.date_from.text() if self.date_from.text() != "...." else None
+        d_to = self.date_to.text() if self.date_to.text() != "...." else None
+        
         return {
             "white": self.white_input.text(),
             "black": self.black_input.text(),
             "min_elo": self.min_elo_input.text(),
+            "date_from": d_from,
+            "date_to": d_to,
             "result": self.result_combo.currentText(),
             "use_position": self.pos_check.isChecked()
         }

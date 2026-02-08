@@ -57,11 +57,10 @@ STYLE_TABLE_HEADER = "QHeaderView::section { font-weight: bold; }"
 
 STYLE_GAME_HEADER = """
     QLabel {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        border-radius: 4px;
-        padding: 10px;
-        margin-bottom: 5px;
+        background-color: transparent;
+        border: none;
+        padding: 8px;
+        margin-bottom: 2px;
         font-family: 'Segoe UI', sans-serif;
     }
 """

@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QCo
 import qtawesome as qta
 
 from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
-from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker
+from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker, PGNAppendWorker
 from src.core.eco import ECOManager
 from src.core.db_manager import DBManager
 from src.core.game_controller import GameController
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
         self.db_sidebar.search_requested.connect(self.open_search)
         self.db_sidebar.invert_filter_requested.connect(self.trigger_invert_filter)
         self.db_sidebar.clear_filter_requested.connect(self.reset_filters)
-        self.db_sidebar.db_switched.connect(lambda name: self.db.set_active_db(name))
+        self.db_sidebar.db_switched.connect(self.switch_database_with_feedback)
         self.db_sidebar.context_menu_requested.connect(self.on_db_list_context_menu)
         db_layout.addWidget(self.db_sidebar, 1)
         
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
         self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
         db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
         
-        self.progress = QProgressBar(); self.progress.setMaximumWidth(150); self.progress.setFixedHeight(12); self.progress.setTextVisible(False); self.progress.setVisible(False)
+        self.progress = QProgressBar(); self.progress.setMaximumWidth(150); self.progress.setFixedHeight(14); self.progress.setTextVisible(True); self.progress.setVisible(False)
         self.statusBar().addPermanentWidget(self.progress)
 
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
@@ -288,7 +288,6 @@ class MainWindow(QMainWindow):
         except: pass
 
     def closeEvent(self, event):
-        self.db.save_clipbase()
         if hasattr(self, 'engine_worker'): self.engine_worker.stop(); self.engine_worker.wait()
         super().closeEvent(event)
 
@@ -304,15 +303,6 @@ class MainWindow(QMainWindow):
     def setup_toolbar(self, toolbar):
         toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
         
-        # BUSCADOR DE JUGADORES
-        self.search_player_input = QLineEdit()
-        self.search_player_input.setPlaceholderText("Analizar Jugador...")
-        self.search_player_input.setMaximumWidth(200)
-        self.search_player_input.returnPressed.connect(lambda: self.show_player_report(self.search_player_input.text()))
-        toolbar.addWidget(QLabel("  🔍 "))
-        toolbar.addWidget(self.search_player_input)
-        toolbar.addSeparator()
-
         left_spacer = QWidget(); left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(left_spacer)
         self.action_search_pos = QAction(qta.icon('fa5s.crosshairs'), "", self); self.action_search_pos.setStatusTip("Buscar partidas con esta posición"); self.action_search_pos.triggered.connect(self.search_current_position); toolbar.addAction(self.action_search_pos); toolbar.addSeparator()
         actions = [(qta.icon('fa5s.step-backward'), self.game.go_start, "Inicio"), (qta.icon('fa5s.chevron-left'), self.game.step_back, "Anterior"), (qta.icon('fa5s.chevron-right'), self.game.step_forward, "Siguiente"), (qta.icon('fa5s.step-forward'), self.game.go_end, "Final"), (None, None, None), (qta.icon('fa5s.retweet'), self.flip_boards, "Girar Tablero")]
@@ -397,30 +387,113 @@ class MainWindow(QMainWindow):
 
     def init_menu(self):
         menubar = self.menuBar()
+        
+        # --- MENÚ ARCHIVO ---
         file_menu = menubar.addMenu("&Archivo")
-        settings_action = QAction(qta.icon('fa5s.cog'), "&Configuración...", self); settings_action.triggered.connect(self.open_settings); file_menu.addAction(settings_action); file_menu.addSeparator()
+        
+        # Abrir
+        open_parquet = QAction(qta.icon('fa5s.folder-open', color='#1976d2'), "&Abrir Base Parquet...", self)
+        open_parquet.setShortcut("Ctrl+O")
+        open_parquet.triggered.connect(self.open_parquet_file)
+        file_menu.addAction(open_parquet)
+        
+        # Importar
+        import_menu = file_menu.addMenu(qta.icon('fa5s.file-import'), "&Importar")
+        import_pgn = QAction(qta.icon('fa5s.file-code', color='#2e7d32'), "Archivo &PGN...", self)
+        import_pgn.setShortcut("Ctrl+I")
+        import_pgn.triggered.connect(self.import_pgn)
+        import_menu.addAction(import_pgn)
+        
+        # Exportar
+        export_menu = file_menu.addMenu(qta.icon('fa5s.file-export'), "&Exportar")
+        export_full_pgn = QAction(qta.icon('fa5s.file-export'), "Base Activa a &PGN...", self)
+        export_full_pgn.triggered.connect(self.export_full_db_to_pgn)
+        export_menu.addAction(export_full_pgn)
+        
+        export_filtered_pgn = QAction(qta.icon('fa5s.filter'), "Filtro a P&GN...", self)
+        export_filtered_pgn.setShortcut("Ctrl+E")
+        export_filtered_pgn.triggered.connect(self.export_filter_to_pgn)
+        export_menu.addAction(export_filtered_pgn)
+        
+        file_menu.addSeparator()
+        settings_action = QAction(qta.icon('fa5s.cog'), "&Configuración...", self)
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
         exit_action = QAction(qta.icon('fa5s.power-off'), "&Salir", self); exit_action.setShortcut("Ctrl+Q"); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
+
+        # --- MENÚ EDITAR (Después de Archivo) ---
+        edit_menu = menubar.addMenu("&Editar")
+        invert_action = QAction(qta.icon('fa5s.exchange-alt'), "&Invertir Filtro", self)
+        invert_action.triggered.connect(self.trigger_invert_filter)
+        edit_menu.addAction(invert_action)
+        
+        clear_action = QAction(qta.icon('fa5s.eraser', color='#c62828'), "&Quitar Filtros", self)
+        clear_action.setShortcut("Ctrl+L"); clear_action.triggered.connect(self.reset_filters); edit_menu.addAction(clear_action)
+        
+        edit_menu.addSeparator()
+        delete_filtered_action = QAction(qta.icon('fa5s.trash-alt', color='#c62828'), "&Borrar Partidas Filtradas", self)
+        delete_filtered_action.triggered.connect(self.delete_filtered_games_ui)
+        edit_menu.addAction(delete_filtered_action)
+
+        # --- MENÚ JUGADOR ---
+        player_menu = menubar.addMenu("&Jugador")
+        report_action = QAction(qta.icon('fa5s.chart-bar', color='#673ab7'), "Dossier de &Inteligencia...", self)
+        report_action.setShortcut("Ctrl+D"); report_action.triggered.connect(self.prompt_player_report); player_menu.addAction(report_action)
+
+        # --- MENÚ BASES DE DATOS ---
         db_menu = menubar.addMenu("&Bases de Datos")
         
-        report_action = QAction(qta.icon('fa5s.chart-bar', color='#673ab7'), "Dossier de &Jugador...", self)
-        report_action.setShortcut("Ctrl+D")
-        report_action.triggered.connect(self.prompt_player_report)
-        db_menu.addAction(report_action)
+        # Submenú Crear
+        create_menu = db_menu.addMenu(qta.icon('fa5s.plus-circle'), "&Crear")
+        
+        new_empty_db = QAction("Base &Vacía...", self)
+        new_empty_db.setShortcut("Ctrl+N")
+        new_empty_db.triggered.connect(self.create_new_db)
+        create_menu.addAction(new_empty_db)
+        
+        new_from_filter = QAction("Desde Filas &Filtradas (Parquet)...", self)
+        new_from_filter.triggered.connect(self.export_filter_to_parquet)
+        create_menu.addAction(new_from_filter)
+        
+        append_pgn_action = QAction(qta.icon('fa5s.file-medical', color='#2e7d32'), "&Añadir PGN a la base activa...", self)
+        append_pgn_action.triggered.connect(self.append_pgn_to_current_db)
+        db_menu.addAction(append_pgn_action)
+        
         db_menu.addSeparator()
+        filter_action = QAction(qta.icon('fa5s.search'), "&Filtrar Partidas...", self)
+        filter_action.setShortcut("Ctrl+F"); filter_action.triggered.connect(self.open_search); db_menu.addAction(filter_action)
+        
+        db_menu.addSeparator()
+        delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self)
+        delete_db_action.triggered.connect(self.delete_current_db_file); db_menu.addAction(delete_db_action)
 
-        new_db_action = QAction(qta.icon('fa5s.plus-circle', color='#2e7d32'), "Nueva Base &Vacía...", self)
-        open_parquet_action = QAction(qta.icon('fa5s.folder-open'), "Abrir Base &Parquet...", self); open_parquet_action.setShortcut("Ctrl+O"); open_parquet_action.triggered.connect(self.open_parquet_file); db_menu.addAction(open_parquet_action)
-        open_pgn_action = QAction(qta.icon('fa5s.file-import', color='#1976d2'), "Importar &PGN...", self); open_pgn_action.setShortcut("Ctrl+I"); open_pgn_action.triggered.connect(self.import_pgn); db_menu.addAction(open_pgn_action); db_menu.addSeparator()
-        filter_action = QAction(qta.icon('fa5s.search'), "&Filtrar Partidas...", self); filter_action.setShortcut("Ctrl+F"); filter_action.triggered.connect(self.open_search); db_menu.addAction(filter_action)
-        invert_action = QAction(qta.icon('fa5s.exchange-alt'), "&Invertir Filtro", self); invert_action.triggered.connect(self.trigger_invert_filter); db_menu.addAction(invert_action)
-        clear_action = QAction(qta.icon('fa5s.eraser', color='#c62828'), "&Quitar Filtros", self); clear_action.setShortcut("Ctrl+L"); clear_action.triggered.connect(self.reset_filters); db_menu.addAction(clear_action); db_menu.addSeparator()
-        export_pgn_action = QAction(qta.icon('fa5s.file-export'), "Exportar &Filtro a PGN...", self); export_pgn_action.setShortcut("Ctrl+E"); export_pgn_action.triggered.connect(self.export_filter_to_pgn); db_menu.addAction(export_pgn_action); db_menu.addSeparator()
-        delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self); delete_db_action.triggered.connect(self.delete_current_db_file); db_menu.addAction(delete_db_action)
+        # --- MENÚ TABLERO ---
         board_menu = menubar.addMenu("&Tablero")
-        flip_action = QAction(qta.icon('fa5s.retweet'), "&Girar Tablero", self); flip_action.setShortcut("F"); flip_action.triggered.connect(self.flip_boards); board_menu.addAction(flip_action)
-        engine_action = QAction(qta.icon('fa5s.microchip'), "&Activar Motor", self); engine_action.setShortcut("E"); engine_action.setCheckable(True); engine_action.triggered.connect(self.toggle_engine_shortcut); board_menu.addAction(engine_action)
+        
+        flip_action = QAction(qta.icon('fa5s.retweet'), "&Girar Tablero", self)
+        flip_action.setShortcut("F")
+        flip_action.triggered.connect(self.flip_boards)
+        board_menu.addAction(flip_action)
+        
+        engine_action = QAction(qta.icon('fa5s.microchip'), "&Activar Motor", self)
+        engine_action.setShortcut("E")
+        engine_action.setCheckable(True)
+        engine_action.triggered.connect(self.toggle_engine_shortcut)
+        board_menu.addAction(engine_action)
+        
+        board_menu.addSeparator()
+        
+        analyze_action = QAction(qta.icon('fa5s.magic', color='#673ab7'), "&Analizar Partida Completa", self)
+        analyze_action.triggered.connect(self.start_full_analysis)
+        board_menu.addAction(analyze_action)
+        
+        # --- MENÚ AYUDA ---
         help_menu = menubar.addMenu("&Ayuda")
-        about_action = QAction(qta.icon('fa5s.info-circle'), "&Acerca de...", self); about_action.triggered.connect(self.show_about_dialog); help_menu.addAction(about_action)
+        about_action = QAction(qta.icon('fa5s.info-circle'), "&Acerca de...", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
 
     def show_about_dialog(self):
         about_text = "<h3>fa-chess</h3><p><b>Versión:</b> 1.0.0</p><p><b>Autor:</b> Fabio Rueda</p><hr><p>Un clon moderno y ligero de Scid vs. PC enfocado en el rendimiento masivo.</p><p><b>Tecnologías clave:</b><ul><li>Python & PySide6 (Qt)</li><li>Polars 1.x (Motor de datos ultra-rápido)</li><li>Python-Chess (Lógica de juego)</li></ul></p><p>© 2026 Fabio Rueda</p>"
@@ -503,41 +576,96 @@ class MainWindow(QMainWindow):
                 if self.db.active_db_name == "Clipbase": self.db.set_active_db("Clipbase")
 
     def on_db_table_context_menu(self, pos):
-        row_idx = self.db_table.currentRow()
-        if row_idx < 0: return
+        selected_items = self.db_table.selectedItems()
+        if not selected_items: return
         
-        white_player = self.db_table.item(row_idx, 2).text()
-        black_player = self.db_table.item(row_idx, 4).text()
+        # Obtener IDs únicos de las filas seleccionadas
+        selected_ids = sorted(list(set([self.db_table.item(item.row(), 0).data(Qt.UserRole) for item in selected_items])))
+        count = len(selected_ids)
+        
+        # Si solo hay una fila, podemos ofrecer el informe del jugador
+        white_player = ""
+        black_player = ""
+        if count == 1:
+            row_idx = self.db_table.currentRow()
+            white_player = self.db_table.item(row_idx, 2).text()
+            black_player = self.db_table.item(row_idx, 4).text()
 
         menu = QMenu()
         
-        # Acciones de Informe de Jugador
-        report_white = QAction(qta.icon('fa5s.user', color='#1976d2'), f"Informe de {white_player}", self)
-        report_white.triggered.connect(lambda: self.show_player_report(white_player))
-        menu.addAction(report_white)
-        
-        report_black = QAction(qta.icon('fa5s.user', color='#555'), f"Informe de {black_player}", self)
-        report_black.triggered.connect(lambda: self.show_player_report(black_player))
-        menu.addAction(report_black)
-        
-        menu.addSeparator()
-        
-        copy_action = QAction(qta.icon('fa5s.copy'), "📋 Copiar Partida a...", self)
-        copy_action.triggered.connect(self.copy_selected_game)
+        if count == 1:
+            report_white = QAction(qta.icon('fa5s.user', color='#1976d2'), f"Dossier de {white_player}", self)
+            report_white.triggered.connect(lambda: self.show_player_report(white_player))
+            menu.addAction(report_white)
+            
+            report_black = QAction(qta.icon('fa5s.user', color='#555'), f"Dossier de {black_player}", self)
+            report_black.triggered.connect(lambda: self.show_player_report(black_player))
+            menu.addAction(report_black)
+            menu.addSeparator()
+
+        # COPIAR (Soporta múltiple)
+        copy_text = f"📋 Copiar {count} partidas a..." if count > 1 else "📋 Copiar Partida a..."
+        copy_action = QAction(qta.icon('fa5s.copy'), copy_text, self)
+        copy_action.triggered.connect(lambda: self.copy_selected_games_logic(selected_ids))
         menu.addAction(copy_action)
 
-        edit_action = QAction(qta.icon('fa5s.edit'), "📝 Editar Datos Partida", self)
-        edit_action.triggered.connect(self.edit_selected_game)
-        menu.addAction(edit_action)
+        if count == 1:
+            edit_action = QAction(qta.icon('fa5s.edit'), "📝 Editar Datos Partida", self)
+            edit_action.triggered.connect(self.edit_selected_game)
+            menu.addAction(edit_action)
 
+        # SECCIÓN DE BORRADO (Sempre visible si es RW)
         is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
         if not is_readonly or self.db.active_db_name == "Clipbase":
             menu.addSeparator()
-            del_action = QAction(qta.icon('fa5s.trash-alt'), "❌ Eliminar Partida", self)
-            del_action.triggered.connect(self.delete_selected_game)
+            del_text = f"❌ Eliminar {count} partidas seleccionadas" if count > 1 else "❌ Eliminar Partida"
+            del_action = QAction(qta.icon('fa5s.trash-alt', color='#c62828'), del_text, self)
+            del_action.triggered.connect(lambda: self.delete_selected_games_logic(selected_ids))
             menu.addAction(del_action)
 
         menu.exec(self.db_table.viewport().mapToGlobal(pos))
+
+    def delete_selected_games_logic(self, ids):
+        count = len(ids)
+        ret = QMessageBox.warning(self, "Eliminar Partidas", 
+                                f"¿Estás seguro de que quieres eliminar {count} partidas seleccionadas?\n\nEste cambio es reversible hasta que pulses 'Persistir Base'.",
+                                QMessageBox.Yes | QMessageBox.No)
+        
+        if ret == QMessageBox.Yes:
+            self.statusBar().showMessage(f"Eliminando {count} partidas...")
+            for game_id in ids:
+                self.db.delete_game(self.db.active_db_name, game_id)
+            
+            self.statusBar().showMessage(f"Eliminadas {count} partidas.", 3000)
+            self.refresh_db_list()
+
+    def copy_selected_games_logic(self, ids):
+        writable_dbs = [name for name, meta in self.db.db_metadata.items() if not meta.get("read_only", True) or name == "Clipbase"]
+        if not writable_dbs: 
+            QMessageBox.warning(self, "Copiar Partidas", "No hay bases de datos con permiso de escritura abiertas.")
+            return
+            
+        from PySide6.QtWidgets import QInputDialog
+        target_db, ok = QInputDialog.getItem(self, "Copiar Partidas", f"Selecciona destino para las {len(ids)} partidas:", writable_dbs, 0, False)
+        if ok and target_db:
+            self.statusBar().showMessage(f"Copiando {len(ids)} partidas...")
+            for game_id in ids:
+                game_data = self.db.get_game_by_id(self.db.active_db_name, game_id)
+                if game_data:
+                    # Generar ID nuevo
+                    game_data["id"] = int(time.time() * 1000) + ids.index(game_id)
+                    from src.core.db_manager import GAME_SCHEMA
+                    clean_data = {k: game_data[k] for k in GAME_SCHEMA.keys() if k in game_data}
+                    
+                    if target_db == "Clipbase":
+                        self.db.add_to_clipbase(clean_data)
+                    else:
+                        new_row = pl.DataFrame([clean_data], schema=GAME_SCHEMA).lazy()
+                        self.db.dbs[target_db] = pl.concat([self.db.dbs[target_db], new_row])
+            
+            self.statusBar().showMessage(f"Copiadas {len(ids)} partidas a {target_db}.", 3000)
+            if self.db.active_db_name == target_db:
+                self.refresh_db_list()
 
     def _fix_tab_buttons(self):
         """Elimina físicamente los botones de cierre de las pestañas fijas"""
@@ -602,9 +730,38 @@ class MainWindow(QMainWindow):
         item = self.db_sidebar.list_widget.itemAt(pos)
         if not item or item.text() == "Clipbase": return
         name = item.text(); is_readonly = self.db.db_metadata.get(name, {}).get("read_only", True); menu = QMenu()
-        if is_readonly: unlock_action = QAction(qta.icon('fa5s.unlock'), " Permitir Escritura", self); unlock_action.triggered.connect(lambda: self.toggle_db_readonly(item, False)); menu.addAction(unlock_action)
-        else: lock_action = QAction(qta.icon('fa5s.lock'), " Poner Solo Lectura", self); lock_action.triggered.connect(lambda: self.toggle_db_readonly(item, True)); menu.addAction(lock_action)
+        if is_readonly: 
+            unlock_action = QAction(qta.icon('fa5s.unlock'), " Permitir Escritura", self)
+            unlock_action.triggered.connect(lambda: self.toggle_db_readonly(item, False))
+            menu.addAction(unlock_action)
+        else: 
+            lock_action = QAction(qta.icon('fa5s.lock'), " Poner Solo Lectura", self)
+            lock_action.triggered.connect(lambda: self.toggle_db_readonly(item, True))
+            menu.addAction(lock_action)
+            
+            # NUEVA ACCIÓN: PERSISTIR BASE
+            persist_action = QAction(qta.icon('fa5s.save', color='#1976d2'), " Persistir Base (Guardar en Disco)", self)
+            persist_action.triggered.connect(self.save_to_active_db)
+            menu.addAction(persist_action)
+
         menu.addSeparator(); remove_action = QAction(qta.icon('fa5s.times', color='red'), " Quitar de la lista", self); remove_action.triggered.connect(lambda: self.remove_database(item)); menu.addAction(remove_action); menu.exec(self.db_sidebar.list_widget.mapToGlobal(pos))
+
+    def switch_database_with_feedback(self, name):
+        """Cambia la base de datos activa mostrando una barra de progreso"""
+        if self.db.active_db_name == name: return
+        
+        self.statusBar().showMessage(f"Cargando base de datos: {name}...")
+        self.progress.setRange(0, 0) # Modo indeterminado
+        self.progress.show()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents() # Forzar refresco
+        
+        try:
+            self.db.set_active_db(name)
+            self.statusBar().showMessage(f"Base '{name}' cargada.", 3000)
+        finally:
+            self.progress.hide()
+            QApplication.restoreOverrideCursor()
 
     def remove_database(self, item):
         name = item.text()
@@ -617,25 +774,50 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Base '{name}' quitada de la lista", 3000)
 
     def save_to_active_db(self):
-        db_name = self.db.active_db_name; is_readonly = self.db.db_metadata.get(db_name, {}).get("read_only", True)
-        if is_readonly and db_name != "Clipbase": QMessageBox.warning(self, "Base de Solo Lectura", f"La base '{db_name}' es de solo lectura. Prueba a guardar en Clipbase."); return
-        line_uci = self.game.current_line_uci; import chess.polyglot; board = chess.Board(); hashes = [chess.polyglot.zobrist_hash(board)]
-        for move in self.game.full_mainline: board.push(move); hashes.append(chess.polyglot.zobrist_hash(board))
+        db_name = self.db.active_db_name
+        is_readonly = self.db.db_metadata.get(db_name, {}).get("read_only", True)
         
+        if is_readonly and db_name != "Clipbase": 
+            QMessageBox.warning(self, "Base de Solo Lectura", f"La base '{db_name}' es de solo lectura. Desbloquéala desde el menú lateral para guardar.")
+            return
+            
+        if db_name == "Clipbase":
+            # Para la Clipbase, esto solo guarda la partida actual al LazyFrame en RAM
+            self.save_current_game_to_memory(db_name)
+            self.statusBar().showMessage("Partida guardada en Clipbase (Memoria)", 3000)
+        else:
+            # Para bases normales, primero guardamos la partida actual en el LazyFrame
+            self.save_current_game_to_memory(db_name)
+            # Y luego persistimos TODO el LazyFrame al disco (incluyendo borrados previos)
+            self.progress.setRange(0, 0); self.progress.show()
+            self.statusBar().showMessage(f"Persistiendo cambios en {db_name}...")
+            QApplication.processEvents()
+            
+            try:
+                if self.db.save_active_db():
+                    self.statusBar().showMessage(f"Base '{db_name}' actualizada correctamente.", 5000)
+                else:
+                    self.statusBar().showMessage("Error al guardar cambios físicos.", 5000)
+            finally:
+                self.progress.hide()
+
+    def save_current_game_to_memory(self, db_name):
+        """Helper para volcar la partida actual al LazyFrame en memoria"""
+        line_uci = self.game.current_line_uci
+        import chess.polyglot; board = chess.Board(); hashes = [chess.polyglot.zobrist_hash(board)]
+        for move in self.game.full_mainline: 
+            board.push(move)
+            hashes.append(chess.polyglot.zobrist_hash(board))
+            
         from src.core.db_manager import GAME_SCHEMA
         game_data = {
             "id": int(time.time() * 1000), 
-            "white": "Jugador Blanco", 
-            "black": "Jugador Negro", 
-            "w_elo": 2500, 
-            "b_elo": 2500, 
-            "result": "*", 
+            "white": "Jugador Blanco", "black": "Jugador Negro", 
+            "w_elo": 2500, "b_elo": 2500, "result": "*", 
             "date": datetime.now().strftime("%Y.%m.%d"), 
-            "event": "Análisis Local", 
-            "site": "", 
+            "event": "Análisis Local", "site": "", 
             "line": " ".join([m.uci() for m in self.game.full_mainline[:12]]), 
-            "full_line": line_uci, 
-            "fens": hashes
+            "full_line": line_uci, "fens": hashes
         }
         
         if db_name == "Clipbase": 
@@ -643,13 +825,22 @@ class MainWindow(QMainWindow):
         else: 
             new_row = pl.DataFrame([game_data], schema=GAME_SCHEMA).lazy()
             self.db.dbs[db_name] = pl.concat([self.db.dbs[db_name], new_row])
-            
-        self.db.set_active_db(db_name); self.statusBar().showMessage(f"Partida guardada en {db_name}", 3000)
+        
+        self.db.set_active_db(db_name)
 
     def export_filter_to_pgn(self):
         df = self.db.current_filter_df if self.db.current_filter_df is not None else self.db.get_active_df()
         if df is None or df.is_empty(): self.statusBar().showMessage("No hay partidas para exportar", 3000); return
-        path, _ = QFileDialog.getSaveFileName(self, "Exportar Filtro a PGN", "/data/chess", "Chess PGN (*.pgn)")
+        self._start_pgn_export(df)
+
+    def export_full_db_to_pgn(self):
+        """Exporta TODA la base de datos activa a PGN"""
+        df = self.db.get_active_df()
+        if df is None or df.is_empty(): self.statusBar().showMessage("La base de datos está vacía", 3000); return
+        self._start_pgn_export(df)
+
+    def _start_pgn_export(self, df):
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar a PGN", "/data/chess", "Chess PGN (*.pgn)")
         if not path: return
         if not path.endswith(".pgn"): path += ".pgn"
         self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show()
@@ -658,10 +849,92 @@ class MainWindow(QMainWindow):
     def on_export_finished(self, path):
         self.progress.hide(); self.statusBar().showMessage(f"Exportadas partidas a {os.path.basename(path)}", 5000); QMessageBox.information(self, "Exportación Completada", f"Se han exportado las partidas correctamente a:\n{path}")
 
+    def export_filter_to_parquet(self):
+        q = self.db.current_filter_query
+        if q is None: self.statusBar().showMessage("No hay filtro activo para exportar", 3000); return
+        
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar Filtro a Parquet", "/data/chess", "Chess Parquet (*.parquet)")
+        if not path: return
+        if not path.endswith(".parquet"): path += ".parquet"
+        
+        try:
+            self.statusBar().showMessage("Exportando a Parquet...")
+            q.collect().write_parquet(path)
+            self.statusBar().showMessage(f"Base Parquet generada: {os.path.basename(path)}", 5000)
+            QMessageBox.information(self, "Exportación Completada", f"Se ha creado la base Parquet en:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error de Exportación", f"No se pudo crear el archivo Parquet: {e}")
+
+    def delete_filtered_games_ui(self):
+        active_db = self.db.active_db_name
+        is_readonly = self.db.db_metadata.get(active_db, {}).get("read_only", True)
+        
+        if is_readonly and active_db != "Clipbase":
+            QMessageBox.warning(self, "Acción no permitida", f"La base '{active_db}' es de solo lectura. Debes permitir la escritura para borrar partidas.")
+            return
+
+        count = self.db.get_view_count()
+        if count == 0: self.statusBar().showMessage("No hay partidas filtradas para borrar", 3000); return
+        
+        ret = QMessageBox.warning(self, "Borrado Masivo", 
+                                f"¿Estás seguro de que quieres borrar las {count} partidas del filtro actual?\n\nEsta acción modificará la base en memoria. Deberás guardar para que sea permanente.",
+                                QMessageBox.Yes | QMessageBox.No)
+        if ret == QMessageBox.Yes:
+            self.statusBar().showMessage(f"Borrando {count} partidas...")
+            self.progress.setRange(0, 0) # Modo indeterminado
+            self.progress.show()
+            QApplication.processEvents() # Forzar visualización
+            
+            try:
+                if self.db.delete_filtered_games():
+                    self.statusBar().showMessage(f"Borradas {count} partidas.", 3000)
+                    self.refresh_db_list()
+            finally:
+                self.progress.hide()
+
     def import_pgn(self):
         path, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "/data/chess", "Chess PGN (*.pgn)")
         if path:
-            self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show(); QApplication.processEvents(); self.worker = PGNWorker(path); self.worker.progress.connect(self.progress.setValue); self.worker.status.connect(self.statusBar().showMessage); self.worker.finished.connect(self.load_parquet); self.worker.start()
+            size_mb = os.path.getsize(path) / (1024 * 1024)
+            msg = f"Importando PGN ({size_mb:.1f} MB)..."
+            if size_mb > 50: msg += " (Archivo grande, por favor ten paciencia)"
+            
+            self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show(); 
+            QApplication.processEvents(); 
+            self.statusBar().showMessage(msg)
+            
+            self.worker = PGNWorker(path)
+            self.worker.progress.connect(self.progress.setValue)
+            self.worker.status.connect(self.statusBar().showMessage)
+            self.worker.finished.connect(self.load_parquet)
+            self.worker.start()
+
+    def append_pgn_to_current_db(self):
+        active_db = self.db.active_db_name
+        if active_db == "Clipbase":
+            QMessageBox.warning(self, "Acción no permitida", "No se puede hacer 'Append' directamente en la Clipbase interna. Importa el PGN como una base nueva o añade partidas una a una.")
+            return
+            
+        path, _ = QFileDialog.getOpenFileName(self, "Seleccionar PGN para añadir", "/data/chess", "Chess PGN (*.pgn)")
+        if path:
+            target_path = self.db.db_metadata[active_db]["path"]
+            size_mb = os.path.getsize(path) / (1024 * 1024)
+            
+            msg = f"Añadiendo partidas a {active_db}..."
+            if size_mb > 50: msg += " (Archivo grande, por favor ten paciencia)"
+            
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.progress.show()
+            self.statusBar().showMessage(msg)
+            
+            self.append_worker = PGNAppendWorker(path, target_path)
+            self.append_worker.status.connect(self.statusBar().showMessage)
+            self.append_worker.progress.connect(self.progress.setValue)
+            # USAR RELOAD_DB PARA REFRESCAR EL PUNTERO AL ARCHIVO
+            self.append_worker.finished.connect(lambda: self.db.reload_db(active_db)) 
+            self.append_worker.finished.connect(lambda: self.progress.hide())
+            self.append_worker.start()
 
     def open_parquet_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Abrir Parquet", "/data/chess", "Chess Parquet (*.parquet)")
@@ -690,15 +963,40 @@ class MainWindow(QMainWindow):
     def sort_database(self, logical_index):
         col_name = self.col_mapping.get(logical_index)
         if not col_name: return
-        self.progress.setRange(0, 0); self.progress.show(); self.statusBar().showMessage(f"Ordenando base completa por {col_name}...")
-        if self.sort_col == col_name: self.sort_desc = not self.sort_desc
-        else: self.sort_col = col_name; self.sort_desc = True 
-        order = Qt.DescendingOrder if self.sort_desc else Qt.AscendingOrder; self.db_table.horizontalHeader().setSortIndicator(logical_index, order); QApplication.processEvents(); self.db.sort_active_db(col_name, self.sort_desc); self.progress.hide(); self.statusBar().showMessage("Listo", 2000)
+        
+        self.progress.setRange(0, 0); self.progress.show()
+        self.statusBar().showMessage(f"Ordenando por {col_name}...")
+        
+        # Cambiar lógica: primer clic Ascendente (False), segundo Descendente (True)
+        if self.sort_col == col_name:
+            self.sort_desc = not self.sort_desc
+        else:
+            self.sort_col = col_name
+            self.sort_desc = False # Empezar por Ascendente
+            
+        # Ajuste de inversión: forzamos que la flecha coincida con la lógica de Polars
+        # Si Polars es DESC (True), usamos el indicador que en este sistema apunta abajo
+        order = Qt.AscendingOrder if self.sort_desc else Qt.DescendingOrder
+        self.db_table.horizontalHeader().setSortIndicator(logical_index, order)
+        
+        QApplication.processEvents()
+        self.db.sort_active_db(col_name, self.sort_desc)
+        self.progress.hide()
+        self.statusBar().showMessage("Listo", 2000)
 
     def open_search(self):
-        dialog = SearchDialog(self); dialog.white_input.setText(self.search_criteria.get("white", "")); dialog.black_input.setText(self.search_criteria.get("black", "")); dialog.min_elo_input.setText(str(self.search_criteria.get("min_elo", ""))); dialog.result_combo.setCurrentText(self.search_criteria.get("result", "Cualquiera")); dialog.pos_check.setChecked(self.search_criteria.get("use_position", False))
+        dialog = SearchDialog(self)
+        dialog.white_input.setText(self.search_criteria.get("white", ""))
+        dialog.black_input.setText(self.search_criteria.get("black", ""))
+        dialog.min_elo_input.setText(str(self.search_criteria.get("min_elo", "")))
+        dialog.date_from.setText(self.search_criteria.get("date_from", ""))
+        dialog.date_to.setText(self.search_criteria.get("date_to", ""))
+        dialog.result_combo.setCurrentText(self.search_criteria.get("result", "Cualquiera"))
+        dialog.pos_check.setChecked(self.search_criteria.get("use_position", False))
+        
         if dialog.exec_():
-            criteria = dialog.get_criteria(); is_empty = not any([criteria.get("white"), criteria.get("black"), criteria.get("min_elo"), criteria.get("use_position")])
+            criteria = dialog.get_criteria()
+            is_empty = not any([criteria.get("white"), criteria.get("black"), criteria.get("min_elo"), criteria.get("date_from"), criteria.get("date_to"), criteria.get("use_position")])
             if criteria.get("result") != "Cualquiera": is_empty = False
             if is_empty: self.reset_filters(); return
             if criteria.get("use_position"):
