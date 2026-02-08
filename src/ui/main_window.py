@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
         # Estado de Ordenación
         self.sort_col = None
         self.sort_desc = False
-        self.col_mapping = {0: "date", 1: "white", 2: "w_elo", 3: "black", 4: "b_elo", 5: "result"}
+        self.col_mapping = {0: "id", 1: "date", 2: "white", 3: "w_elo", 4: "black", 5: "b_elo", 6: "result"}
         
         self.game_evals = [] # Almacenar evaluaciones de la partida actual
         
@@ -326,7 +326,7 @@ class MainWindow(QMainWindow):
         
         # Contenido de la Tabla
         db_content = QVBoxLayout()
-        self.db_table = self.create_scid_table(["Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"])
+        self.db_table = self.create_scid_table(["ID", "Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"])
         self.db_table.setFont(table_font)
         self.db_table.itemDoubleClicked.connect(self.load_game_from_list)
         self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
@@ -920,7 +920,14 @@ class MainWindow(QMainWindow):
         if df is None: return
         disp = df.head(1000); self.db_table.setRowCount(disp.height)
         for i, r in enumerate(disp.rows(named=True)):
-            self.db_table.setItem(i, 0, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 1, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 2, QTableWidgetItem(str(r["w_elo"]))); self.db_table.setItem(i, 3, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 4, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 5, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
+            self.db_table.setItem(i, 0, QTableWidgetItem(str(r["id"])))
+            self.db_table.setItem(i, 1, QTableWidgetItem(r["date"]))
+            self.db_table.setItem(i, 2, QTableWidgetItem(r["white"]))
+            self.db_table.setItem(i, 3, QTableWidgetItem(str(r["w_elo"])))
+            self.db_table.setItem(i, 4, QTableWidgetItem(r["black"]))
+            self.db_table.setItem(i, 5, QTableWidgetItem(str(r["b_elo"])))
+            self.db_table.setItem(i, 6, QTableWidgetItem(r["result"]))
+            self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
         self.db_table.resizeColumnsToContents()
 
     def load_game_from_list(self, item):
