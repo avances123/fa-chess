@@ -683,12 +683,6 @@ class MainWindow(QMainWindow):
 
         db_menu.addSeparator()
         
-        build_tree_action = QAction(qta.icon('fa5s.sitemap'), "&Generar Árbol de Aperturas...", self)
-        build_tree_action.triggered.connect(self.build_opening_tree)
-        db_menu.addAction(build_tree_action)
-
-        db_menu.addSeparator()
-        
         delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self)
         delete_db_action.triggered.connect(self.delete_current_db_file)
         db_menu.addAction(delete_db_action)
@@ -706,6 +700,31 @@ class MainWindow(QMainWindow):
         engine_action.setCheckable(True)
         engine_action.triggered.connect(self.toggle_engine_shortcut)
         board_menu.addAction(engine_action)
+
+        # Menú Ayuda
+        help_menu = menubar.addMenu("&Ayuda")
+        about_action = QAction(qta.icon('fa5s.info-circle'), "&Acerca de...", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
+
+    def show_about_dialog(self):
+        """Muestra el diálogo informativo del programa"""
+        about_text = """
+            <h3>fa-chess</h3>
+            <p><b>Versión:</b> 1.0.0</p>
+            <p><b>Autor:</b> Fabio Rueda</p>
+            <hr>
+            <p>Un clon moderno y ligero de Scid vs. PC enfocado en el rendimiento masivo.</p>
+            <p><b>Tecnologías clave:</b>
+            <ul>
+                <li>Python & PySide6 (Qt)</li>
+                <li>Polars 1.x (Motor de datos ultra-rápido)</li>
+                <li>Python-Chess (Lógica de juego)</li>
+            </ul>
+            </p>
+            <p>© 2026 Fabio Rueda</p>
+        """
+        QMessageBox.about(self, "Acerca de fa-chess", about_text)
 
     def create_new_db(self):
         path, _ = QFileDialog.getSaveFileName(self, "Crear Nueva Base", "/data/chess", "Chess Parquet (*.parquet)")
@@ -742,38 +761,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "Error", "No se pudo eliminar el archivo. Comprueba que no esté abierto por otro programa.")
 
     def on_opening_label_link(self, link):
-        if link == "build_tree":
-            self.build_opening_tree()
-
-    def build_opening_tree(self):
-        name = self.db.active_db_name
-        path = self.db.db_metadata.get(name, {}).get("path")
-        if not path:
-            QMessageBox.warning(self, "Acción no permitida", "No se puede generar un árbol para la Clipbase interna.")
-            return
-            
-        ret = QMessageBox.question(self, "Generar Árbol", 
-            f"¿Deseas generar el índice de árbol para '{name}'?\n\nEsto permitirá una exploración instantánea de las aperturas (transposiciones).",
-            QMessageBox.Yes | QMessageBox.No)
-            
-        if ret == QMessageBox.Yes:
-            self.progress.setRange(0, 100)
-            self.progress.setValue(0)
-            self.progress.show()
-            from core.workers import TreeBuilderWorker
-            self.tree_builder = TreeBuilderWorker(path)
-            self.tree_builder.progress.connect(self.progress.setValue) # Conexión faltante corregida
-            self.tree_builder.status.connect(self.statusBar().showMessage)
-            self.tree_builder.finished.connect(self.on_tree_built)
-            self.tree_builder.start()
-
-    def on_tree_built(self, tree_path):
-        self.progress.hide()
-        # Notificar al manager que cargue el nuevo árbol
-        self.db.load_tree(self.db.db_metadata[self.db.active_db_name]["path"])
-        self.run_stats_worker() # Refrescar el árbol actual con los nuevos datos
-        self.statusBar().showMessage(f"Árbol generado con éxito: {os.path.basename(tree_path)}", 5000)
-        QMessageBox.information(self, "Proceso Completado", "Se ha generado el índice de árbol. Ahora la exploración será instantánea.")
+        pass
 
     def export_filter_to_pgn(self):
         # Exportar partidas visibles (filtradas) a un archivo PGN
@@ -844,11 +832,9 @@ class MainWindow(QMainWindow):
         col_name = self.col_mapping.get(logical_index)
         if not col_name: return
         
-        # Feedback visual estable
-        self.progress.setRange(0, 100)
-        self.progress.setValue(50)
-        self.progress.setVisible(True)
-        self.statusBar().showMessage(f"Ordenando por {col_name}...", 2000)
+        self.progress.setRange(0, 0)
+        self.progress.show()
+        self.statusBar().showMessage(f"Ordenando base completa por {col_name}...")
         
         # Alternar orden
         if self.sort_col == col_name:
@@ -860,27 +846,13 @@ class MainWindow(QMainWindow):
         # Actualizar flechita en cabecera
         order = Qt.DescendingOrder if self.sort_desc else Qt.AscendingOrder
         self.db_table.horizontalHeader().setSortIndicator(logical_index, order)
-        
-        # Forzar repintado antes de congelar por cálculo
         QApplication.processEvents()
             
-        # Ordenar el DataFrame activo
-        db_name = self.db.active_db_name
-        if db_name in self.db.dbs:
-            # Para persistir el orden, lo ideal es ordenar self.db.dbs[db_name] o current_filter_df
-            df_to_show = None
-            if self.db.current_filter_df is not None:
-                self.db.current_filter_df = self.db.current_filter_df.sort(col_name, descending=self.sort_desc)
-                df_to_show = self.db.current_filter_df
-            else:
-                self.db.dbs[db_name] = self.db.dbs[db_name].sort(col_name, descending=self.sort_desc)
-                # Si no hay filtro, refresh_db_list cogerá dbs[name] automáticamente, pero podemos ser explícitos
-                df_to_show = self.db.dbs[db_name]
-                
-            self.refresh_db_list(df_to_show)
-            
-        self.progress.setValue(100)
-        self.progress.setVisible(False)
+        # Ordenación Lazy Real
+        self.db.sort_active_db(col_name, self.sort_desc)
+        
+        self.progress.hide()
+        self.statusBar().showMessage("Listo", 2000)
 
     def open_search(self):
         dialog = SearchDialog(self)

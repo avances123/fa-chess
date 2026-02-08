@@ -106,65 +106,6 @@ class StatsWorker(QThread):
             print(f"Error en StatsWorker: {e}")
             self.finished.emit(None)
 
-class TreeBuilderWorker(QThread):
-    # Se mantiene por compatibilidad si el usuario quiere generar un archivo estático
-    # pero el programa ya no depende de él para el día a día.
-    progress = Signal(int)
-    finished = Signal(str)
-    status = Signal(str)
-
-    def __init__(self, db_path):
-        super().__init__()
-        self.db_path = db_path
-        self.running = True
-
-    def run(self):
-        import tempfile, shutil, subprocess, sys
-        temp_dir = tempfile.mkdtemp(prefix="fa_chess_tree_")
-        bucket_results_dir = tempfile.mkdtemp(prefix="fa_chess_buckets_")
-        try:
-            self.status.emit("Calculando total...")
-            lazy_source = pl.scan_parquet(self.db_path)
-            total_rows = lazy_source.select(pl.len()).collect().item()
-            chunk_size = 200000 
-            total_chunks = (total_rows + chunk_size - 1) // chunk_size
-            script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts", "process_chunk.py")
-            for i in range(0, total_rows, chunk_size):
-                if not self.running: break
-                chunk_num = i // chunk_size
-                self.status.emit(f"Fase 1: Mapeando bloque {chunk_num + 1}/{total_chunks}...")
-                self.progress.emit(int((i / total_rows) * 70))
-                cmd = [sys.executable, script_path, "--mode", "process", "--db", self.db_path, "--start", str(i), "--len", str(chunk_size), "--temp_dir", temp_dir, "--chunk_num", str(chunk_num)]
-                subprocess.run(cmd, check=True)
-                gc.collect()
-            if not self.running: return
-            for b in range(16):
-                if not self.running: break
-                self.status.emit(f"Fase 2: Consolidando cubo {b+1}/16...")
-                self.progress.emit(70 + int((b / 16) * 25))
-                bucket_out = os.path.join(bucket_results_dir, f"bucket_{b}.parquet")
-                cmd = [sys.executable, script_path, "--mode", "merge_bucket", "--bucket", str(b), "--temp_dir", temp_dir, "--out", bucket_out]
-                subprocess.run(cmd, check=True)
-                gc.collect()
-            if not self.running: return
-            self.status.emit("Guardando árbol final...")
-            out_path = self.db_path.replace(".parquet", ".tree.parquet")
-            cmd_final = [sys.executable, script_path, "--mode", "final_merge", "--temp_dir", bucket_results_dir, "--out", out_path]
-            subprocess.run(cmd_final, check=True)
-            self.status.emit("Árbol generado correctamente.")
-            self.finished.emit(out_path)
-        except Exception as e:
-            error_msg = f"Error generando árbol: {str(e)}"
-            self.status.emit(error_msg); print(error_msg)
-        finally:
-            for d in [temp_dir, bucket_results_dir]:
-                try:
-                    if os.path.exists(d): shutil.rmtree(d)
-                except: pass
-            self.progress.emit(100)
-
-    def stop(self): self.running = False
-
 class PGNExportWorker(QThread):
     progress = Signal(int)
     finished = Signal(str)
