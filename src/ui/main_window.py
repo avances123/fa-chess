@@ -340,6 +340,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
             try: self.stats_worker.finished.disconnect(); self._active_workers.append(self.stats_worker)
             except: pass
+        
+        # MOSTRAR SPINNER
+        self.opening_tree.set_loading(True)
+        
         self.progress.setRange(0, 0); self.progress.show(); self.statusBar().showMessage("Calculando estadísticas...")
         import chess.polyglot
         current_hash = chess.polyglot.zobrist_hash(self.game.board)

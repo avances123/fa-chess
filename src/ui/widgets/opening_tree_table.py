@@ -1,9 +1,10 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
-from PySide6.QtCore import Qt, Signal
+                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QStackedWidget)
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QColor, QFont
 import polars as pl
 import chess
+import qtawesome as qta
 from src.ui.styles import STYLE_TABLE_HEADER
 from src.ui.widgets.results_bar import ResultsWidget
 from src.ui.utils import SortableWidgetItem
@@ -43,7 +44,10 @@ class OpeningTreeTable(QWidget):
         header_layout.addWidget(self.label_global_stats)
         layout.addLayout(header_layout)
 
-        # Table con las columnas originales
+        # Stacked Widget para alternar entre tabla y carga
+        self.stack = QStackedWidget()
+        
+        # Página 1: La Tabla
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Movim.", "Frec.", "Barra", "Win %", "AvElo", "Perf"])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -53,7 +57,6 @@ class OpeningTreeTable(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(22)
         self.table.setStyleSheet(STYLE_TABLE_HEADER)
         
-        # Configuración de cabeceras
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1, 6):
@@ -62,9 +65,44 @@ class OpeningTreeTable(QWidget):
         self.table.itemDoubleClicked.connect(self._on_double_click)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         
-        layout.addWidget(self.table)
+        self.stack.addWidget(self.table)
+        
+        # Página 2: Indicador de Carga
+        self.loading_container = QWidget()
+        loading_layout = QVBoxLayout(self.loading_container)
+        
+        # Usamos un QPushButton transparente para que la animación funcione (QLabel no anima iconos de fuente directamente)
+        from PySide6.QtWidgets import QPushButton as QPushBtn
+        self.spinner_widget = QPushBtn()
+        self.spinner_widget.setFlat(True)
+        self.spinner_widget.setDisabled(True)
+        self.spinner_widget.setStyleSheet("background: transparent; border: none;")
+        self.spinner_widget.setIconSize(QSize(32, 32))
+        
+        # Aplicar el icono con animación de giro
+        spinner_icon = qta.icon('fa5s.spinner', color='#999', animation=qta.Spin(self.spinner_widget))
+        self.spinner_widget.setIcon(spinner_icon)
+        
+        loading_text = QLabel("Calculando estadísticas...<br><span style='color: #aaa; font-size: 10px;'>(Se guardarán en caché para acceso instantáneo)</span>")
+        loading_text.setStyleSheet("color: #888; font-size: 11px;")
+        loading_text.setAlignment(Qt.AlignCenter)
+        loading_text.setWordWrap(True)
+        
+        loading_layout.addStretch()
+        loading_layout.addWidget(self.spinner_widget, 0, Qt.AlignCenter)
+        loading_layout.addWidget(loading_text)
+        loading_layout.addStretch()
+        
+        self.stack.addWidget(self.loading_container)
+        
+        layout.addWidget(self.stack)
+
+    def set_loading(self, loading=True):
+        """Muestra u oculta el estado de carga"""
+        self.stack.setCurrentIndex(1 if loading else 0)
 
     def update_tree(self, stats_df, current_board, opening_name, is_filtered=False, total_view_count=0):
+        self.set_loading(False) # Asegurar que mostramos la tabla al recibir datos
         self.label_eco.setText(opening_name if opening_name else "Posición desconocida")
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)

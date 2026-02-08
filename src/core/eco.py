@@ -20,8 +20,11 @@ class ECOManager:
                         parts = line.split('"')
                         if len(parts) < 3: continue
                         
+                        eco_code = parts[0].strip() # Capturar el código (ej. A33)
                         name = parts[1]
                         moves_part = parts[2].strip()
+                        
+                        # ... resto de la lógica de limpieza ...
                         
                         # 1. Limpiar comentarios { ... } y ( ... )
                         moves_part = re.sub(r'\{.*?\}', '', moves_part)
@@ -45,7 +48,8 @@ class ECOManager:
                             
                             line_uci_str = " ".join(uci_moves)
                             if line_uci_str: # Solo añadir si tiene jugadas
-                                self.openings.append((line_uci_str, name))
+                                full_display_name = f"{eco_code}: {name}" if eco_code else name
+                                self.openings.append((line_uci_str, full_display_name))
                         except:
                             continue
                             
