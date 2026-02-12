@@ -3,9 +3,13 @@ import chess.polyglot
 import polars as pl
 import os
 import time
+import io
+import tempfile
+import shutil
+from concurrent.futures import ProcessPoolExecutor
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
-# Esquema unificado (debe coincidir con DBManager)
+# Esquema unificado
 GAME_SCHEMA = {
     "id": pl.Int64, 
     "white": pl.String, 
@@ -21,22 +25,11 @@ GAME_SCHEMA = {
     "fens": pl.List(pl.UInt64)
 }
 
-def count_games(pgn_path):
-    """Cuenta rápidamente las partidas buscando el tag [Event ]"""
-    count = 0
-    with open(pgn_path, "rb") as f:
-        for line in f:
-            if line.startswith(b"[Event "):
-                count += 1
-    return count
-
 def extract_game_data(count, game):
-    """Lógica unificada para extraer datos usando Zobrist Hashes para las posiciones"""
     headers = game.headers
     board = game.board()
     hashes = [chess.polyglot.zobrist_hash(board)]
     uci_moves = []
-    
     for move in game.mainline_moves():
         uci_moves.append(move.uci())
         board.push(move)
@@ -50,93 +43,116 @@ def extract_game_data(count, game):
         except: return 0
 
     return {
-        "id": count,
-        "white": headers.get("White", "Unknown"),
-        "black": headers.get("Black", "Unknown"),
-        "w_elo": safe_int(headers.get("WhiteElo")),
-        "b_elo": safe_int(headers.get("BlackElo")),
-        "result": headers.get("Result", "*"),
-        "date": headers.get("Date", "????.??.??"),
-        "event": headers.get("Event", "?"),
-        "site": headers.get("Site", ""),
-        "line": " ".join(uci_moves[:12]),
-        "full_line": " ".join(uci_moves),
-        "fens": hashes 
+        "id": count, "white": headers.get("White", "Unknown"), "black": headers.get("Black", "Unknown"),
+        "w_elo": safe_int(headers.get("WhiteElo")), "b_elo": safe_int(headers.get("BlackElo")),
+        "result": headers.get("Result", "*"), "date": headers.get("Date", "????.??.??"),
+        "event": headers.get("Event", "?"), "site": headers.get("Site", ""),
+        "line": " ".join(uci_moves[:12]), "full_line": " ".join(uci_moves), "fens": hashes 
     }
 
-def convert_pgn_to_parquet(pgn_path, output_path, max_games=10000000, chunk_size=10000, progress_callback=None):
-    """
-    Convierte un PGN a Parquet procesando por chunks para optimizar memoria.
-    """
-    real_total = count_games(pgn_path)
-    total_to_process = min(real_total, max_games)
+def process_pgn_chunk_to_parquet(args):
+    """Función de trabajador: procesa texto y guarda un archivo parquet temporal"""
+    chunk_str, start_id, temp_dir, chunk_index = args
+    pgn_io = io.StringIO(chunk_str)
+    results = []
+    current_id = start_id
     
-    dfs = [] # Lista de DataFrames de Polars
-    current_chunk = []
+    while True:
+        game = chess.pgn.read_game(pgn_io)
+        if game is None: break
+        results.append(extract_game_data(current_id, game))
+        current_id += 1
+    
+    if results:
+        # Guardamos este bloque inmediatamente a disco para liberar RAM
+        chunk_path = os.path.join(temp_dir, f"chunk_{chunk_index:06d}.parquet")
+        pl.DataFrame(results, schema=GAME_SCHEMA).write_parquet(chunk_path)
+        return chunk_path
+    return None
+
+def count_games_fast(pgn_path):
+    count = 0
+    with open(pgn_path, "rb") as f:
+        for line in f:
+            if line.startswith(b"[Event "): count += 1
+    return count
+
+def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_size=5000, progress_callback=None, workers=None):
+    start_time = time.time()
+    num_workers = workers if workers else os.cpu_count()
+    
+    # 1. Preparación de entorno temporal
+    total_games_file = count_games_fast(pgn_path)
+    total_to_process = min(total_games_file, max_games)
+    
+    temp_work_dir = tempfile.mkdtemp(prefix="fa_chess_conv_")
+    print(f"Directorio temporal: {temp_work_dir}")
+
+    # 2. Troceado de archivo (Stream de texto)
+    chunks_args = []
+    game_count = 0
+    chunk_index = 0
+    
+    with open(pgn_path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = []
+        for line in f:
+            if line.startswith("[Event ") and lines:
+                game_count += 1
+                if game_count % chunk_size == 0:
+                    chunks_args.append(("".join(lines), game_count - chunk_size, temp_work_dir, chunk_index))
+                    lines = []
+                    chunk_index += 1
+                if game_count >= total_to_process: break
+            lines.append(line)
+        if lines and game_count < total_to_process:
+            chunks_args.append(("".join(lines), (game_count // chunk_size) * chunk_size, temp_work_dir, chunk_index))
+
+    # 3. Procesamiento Paralelo
+    parquet_files = []
+    processed_count = 0
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
-        TextColumn("[blue]{task.completed}/{task.total} games"),
-        TextColumn("[green]{task.fields[speed]} g/s"),
+        TextColumn("[blue]{task.completed}/{task.total} partidas"),
+        TextColumn("[green]{task.fields[speed]} p/s"),
         TimeElapsedColumn(),
-        disable=False # Siempre visible en CLI
     ) as progress:
         
-        task = progress.add_task(
-            f"Convirtiendo {os.path.basename(pgn_path)}", 
-            total=total_to_process, 
-            speed="0.0"
-        )
+        task = progress.add_task(f"Analizando en {num_workers} hilos...", total=total_to_process, speed="0")
         
-        with open(pgn_path, encoding="utf-8", errors="ignore") as pgn:
-            count = 0
-            start_time = time.time()
-            
-            while count < total_to_process:
-                game = chess.pgn.read_game(pgn)
-                if game is None:
-                    break
-                
-                current_chunk.append(extract_game_data(count, game))
-                count += 1
-                
-                if len(current_chunk) >= chunk_size:
-                    dfs.append(pl.DataFrame(current_chunk, schema=GAME_SCHEMA))
-                    current_chunk = []
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            for chunk_path in executor.map(process_pgn_chunk_to_parquet, chunks_args):
+                if chunk_path:
+                    parquet_files.append(chunk_path)
+                    processed_count += chunk_size # Aproximado para la barra
+                    if processed_count > total_to_process: processed_count = total_to_process
                     
                     elapsed = time.time() - start_time
-                    speed = f"{count / elapsed:.1f}" if elapsed > 0 else "0.0"
+                    speed = f"{processed_count / elapsed:.0f}" if elapsed > 0 else "0"
                     
-                    # Actualizar AMBAS barras
+                    progress.update(task, completed=processed_count, speed=speed)
                     if progress_callback:
-                        progress_callback(int((count / total_to_process) * 100))
-                    
-                    progress.update(task, completed=count, speed=speed)
+                        progress_callback(int((processed_count / total_to_process) * 100))
 
-            if current_chunk:
-                dfs.append(pl.DataFrame(current_chunk, schema=GAME_SCHEMA))
-            
-            if progress_callback:
-                progress_callback(100)
-            
-            progress.update(task, completed=count, total=count)
-
-    if dfs:
-        print(f"\nConcatenando {len(dfs)} bloques y escribiendo Parquet...")
-        # Polars es extremadamente rápido concatenando DataFrames con el mismo esquema
-        final_df = pl.concat(dfs)
-        final_df.write_parquet(output_path)
-        print(f"Base de datos generada con éxito en: {output_path}")
+    # 4. Fusión Final con Polars Streaming (La clave para la RAM)
+    if parquet_files:
+        print(f"\nFusionando {len(parquet_files)} bloques en el archivo final...")
+        # Polars puede leer múltiples parquets y unirlos sin cargar todo a la vez
+        pl.scan_parquet(os.path.join(temp_work_dir, "*.parquet")).collect(streaming=True).write_parquet(output_path)
+        
+    # Limpieza
+    shutil.rmtree(temp_work_dir)
+    
+    end_time = time.time()
+    final_count = total_to_process
+    print(f"\n¡Éxito! Procesadas {final_count} partidas en {end_time - start_time:.1f}s.")
+    print(f"Velocidad media: {final_count/(end_time - start_time):.0f} partidas/s")
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Uso: uv run src/converter.py <archivo.pgn> [archivo.parquet]")
+        print("Uso: fa-chess-convert <archivo.pgn> <archivo.parquet>")
         sys.exit(1)
-    
-    input_pgn = sys.argv[1]
-    output_parquet = sys.argv[2] if len(sys.argv) > 2 else input_pgn.replace(".pgn", ".parquet")
-    
-    convert_pgn_to_parquet(input_pgn, output_parquet)
+    convert_pgn_to_parquet(sys.argv[1], sys.argv[2])

@@ -8,6 +8,7 @@ def main():
     parser.add_argument("input", help="Ruta al fichero PGN de entrada")
     parser.add_argument("output", help="Ruta al fichero Parquet de salida")
     parser.add_argument("--max", type=int, default=None, help="Número máximo de partidas a procesar (por defecto: todas)")
+    parser.add_argument("--workers", type=int, default=None, help="Número de núcleos a utilizar (por defecto: todos)")
 
     args = parser.parse_args()
 
@@ -19,7 +20,7 @@ def main():
     max_val = args.max if args.max is not None else 999999999
     
     try:
-        convert_pgn_to_parquet(args.input, args.output, max_games=max_val)
+        convert_pgn_to_parquet(args.input, args.output, max_games=max_val, workers=args.workers)
     except KeyboardInterrupt:
         print("\nConversión cancelada por el usuario.")
         sys.exit(1)

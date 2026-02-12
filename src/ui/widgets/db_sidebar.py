@@ -12,6 +12,7 @@ class DBSidebar(QWidget):
     invert_filter_requested = Signal()
     clear_filter_requested = Signal()
     db_switched = Signal(str)
+    readonly_toggled = Signal(object) # Solo el ítem, MainWindow hará el toggle
     context_menu_requested = Signal(object, object) # pos, item
 
     def __init__(self, parent=None):
@@ -58,10 +59,20 @@ class DBSidebar(QWidget):
         self.list_widget.setIconSize(QSize(14, 14))
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
+        self.list_widget.itemClicked.connect(self._on_item_clicked)
         self.list_widget.customContextMenuRequested.connect(
             lambda pos: self.context_menu_requested.emit(pos, self.list_widget.itemAt(pos))
         )
         layout.addWidget(self.list_widget)
+
+    def _on_item_clicked(self, item):
+        """Toggle RO/RW al hacer un solo clic en el icono"""
+        if item.text() == "Clipbase": return
+        
+        # Detectar si el clic fue en la zona del icono (izquierda)
+        local_pos = self.list_widget.mapFromGlobal(self.cursor().pos())
+        if local_pos.x() < 35: 
+            self.readonly_toggled.emit(item)
 
     def _add_act(self, icon, color, tip, callback):
         act = self.toolbar.addAction(qta.icon(icon, color=color) if color else qta.icon(icon), "")
@@ -70,6 +81,8 @@ class DBSidebar(QWidget):
     def add_db_item(self, name, is_clipbase=False):
         icon = qta.icon('fa5s.clipboard', color='#2e7d32') if is_clipbase else qta.icon('fa5s.database')
         item = QListWidgetItem(icon, name)
+        if not is_clipbase:
+            item.setToolTip("Doble clic para cambiar entre Solo Lectura y Escritura")
         self.list_widget.addItem(item)
         return item
 

@@ -8,7 +8,6 @@ from PySide6.QtCore import QObject, Signal
 
 # Rutas del Proyecto
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# NOTA: La Clipbase es ahora volátil, no usa este archivo, pero mantenemos la constante por compatibilidad
 CLIPBASE_FILE = os.path.expanduser("~/.config/fa-chess-clipbase.parquet")
 
 GAME_SCHEMA = {
@@ -49,11 +48,11 @@ class DBManager(QObject):
     def init_clipbase(self):
         """Inicializa la Clipbase puramente en memoria (Lazy)"""
         self.dbs["Clipbase"] = pl.DataFrame(schema=GAME_SCHEMA).lazy()
-        self.db_metadata["Clipbase"] = {"read_only": False, "path": None}
+        self.db_metadata["Clipbase"] = {"read_only": False, "path": None, "dirty": False}
         self.reset_to_full_base()
 
     def save_clipbase(self):
-        """La Clipbase es ahora volátil, no hace nada al guardar"""
+        """La Clipbase es volátil"""
         pass
 
     def save_active_db(self):
@@ -64,57 +63,54 @@ class DBManager(QObject):
             if path:
                 temp_path = path + ".tmp_save"
                 try:
-                    # 1. Ejecutamos el plan Lazy y escribimos a un archivo TEMPORAL
-                    # Esto evita leer y escribir en el mismo fichero simultáneamente
                     self.dbs[name].collect().write_parquet(temp_path)
-                    
-                    # 2. Si la escritura fue bien, reemplazamos el original
-                    if os.path.exists(path):
-                        os.remove(path)
+                    if os.path.exists(path): os.remove(path)
                     os.rename(temp_path, path)
-                    
-                    # 3. Forzamos un re-escaneo limpio para invalidar metadatos viejos
+                    self.set_dirty(name, False)
                     self.reload_db(name)
                     return True
                 except Exception as e:
                     if os.path.exists(temp_path): os.remove(temp_path)
-                    print(f"Error crítico al persistir base: {e}")
+                    print(f"Error al persistir: {e}")
                     raise e
         return False
 
     def set_readonly(self, name, status):
-        """Cambia el estado de solo lectura de una base de datos específica"""
         if name in self.db_metadata:
             self.db_metadata[name]["read_only"] = status
             return True
         return False
 
+    def set_dirty(self, name, status=True):
+        if name in self.db_metadata and name != "Clipbase":
+            self.db_metadata[name]["dirty"] = status
+            return True
+        return False
+
+    def is_dirty(self, name):
+        return self.db_metadata.get(name, {}).get("dirty", False)
+
     def load_parquet(self, path):
         name = os.path.basename(path)
         try:
-            # Prueba de integridad mínima: leer la cabecera
             test_scan = pl.scan_parquet(path)
             test_scan.head(1).collect() 
-            
-            # Si pasa, cargamos normalmente
             self.dbs[name] = test_scan.cast(GAME_SCHEMA)
-            self.db_metadata[name] = {"read_only": True, "path": path}
+            self.db_metadata[name] = {"read_only": True, "path": path, "dirty": False}
             self.active_db_name = name
             self.reset_to_full_base()
             self.database_loaded.emit(name)
             self.active_db_changed.emit(name)
             return name
         except Exception as e:
-            print(f"Error crítico: El archivo Parquet está corrupto o es inválido: {e}")
+            print(f"Error cargando Parquet: {e}")
             return None
 
     def reload_db(self, name):
-        """Refresca el escaneo del archivo Parquet (necesario tras un Append)"""
         if name in self.db_metadata:
             path = self.db_metadata[name]["path"]
             if path and os.path.exists(path):
-                if name in self.dbs:
-                    del self.dbs[name]
+                if name in self.dbs: del self.dbs[name]
                 self.dbs[name] = pl.scan_parquet(path).cast(GAME_SCHEMA)
                 if self.active_db_name == name:
                     self.filter_id += 1 
@@ -125,7 +121,6 @@ class DBManager(QObject):
         return False
 
     def reset_to_full_base(self):
-        """Resetea el estado para mostrar la base completa (Lazy)"""
         self.current_filter_query = None
         self.current_filter_df = None
         self.current_view_count = self.get_active_count()
@@ -146,34 +141,27 @@ class DBManager(QObject):
     def filter_db(self, criteria):
         lazy_df = self.dbs.get(self.active_db_name)
         if lazy_df is None: return
-        
         q = lazy_df
         white = criteria.get("white")
         if white: q = q.filter(pl.col("white").str.contains(white))
         black = criteria.get("black")
         if black: q = q.filter(pl.col("black").str.contains(black))
-        
         if criteria.get("position_hash"):
             target = int(criteria["position_hash"])
             q = q.filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64)))
-        
         min_elo = criteria.get("min_elo")
         if min_elo and str(min_elo).isdigit():
             m = int(min_elo); q = q.filter((pl.col("w_elo") >= m) | (pl.col("b_elo") >= m))
-            
         def is_valid_date(d): return d and any(c.isdigit() for c in d)
         date_from = criteria.get("date_from")
         if is_valid_date(date_from): q = q.filter(pl.col("date") >= date_from)
         date_to = criteria.get("date_to")
         if is_valid_date(date_to): q = q.filter(pl.col("date") <= date_to)
-
         result = criteria.get("result")
         if result and result != "Cualquiera": q = q.filter(pl.col("result") == result)
-        
         self.current_filter_query = q
         self.current_filter_df = q.head(1000).collect()
         self.current_view_count = q.select(pl.len()).collect().item()
-        
         self.filter_id += 1 
         self.stats_cache.clear()
         self.filter_updated.emit(self.current_filter_df)
@@ -186,7 +174,6 @@ class DBManager(QObject):
             self.current_filter_query = lazy_active.head(0)
         else:
             self.current_filter_query = lazy_active.join(self.current_filter_query.select("id"), on="id", how="anti")
-            
         res = pl.collect_all([self.current_filter_query.head(1000), self.current_filter_query.select(pl.len())])
         self.current_filter_df = res[0]
         self.current_view_count = res[1].item()
@@ -196,20 +183,17 @@ class DBManager(QObject):
         return self.current_filter_df
 
     def sort_active_db(self, col_name, descending):
-        """Ordenación Lazy sobre el conjunto completo de datos con soporte para streaming"""
         q = self.get_current_view()
         if q is None: return
-
-        q = q.sort(col_name, descending=descending)
-        
-        if self.current_filter_query is not None:
-            self.current_filter_query = q
-        else:
-            self.dbs[self.active_db_name] = q
-        
-        # Usamos streaming=True para que la ordenación masiva no sature la memoria
-        self.current_filter_df = q.head(1000).collect(streaming=True)
-        self.filter_updated.emit(self.current_filter_df)
+        try:
+            q = q.sort(col_name, descending=descending)
+            if self.current_filter_query is not None: self.current_filter_query = q
+            else: self.dbs[self.active_db_name] = q
+            self.current_filter_df = q.head(1000).collect(streaming=True)
+            self.filter_updated.emit(self.current_filter_df)
+        except Exception as e:
+            print(f"Error al ordenar: {e}")
+            self.filter_updated.emit(None)
 
     def get_cached_stats(self, pos_hash):
         return self.stats_cache.get((self.filter_id, int(pos_hash)))
@@ -230,11 +214,29 @@ class DBManager(QObject):
         self.dbs["Clipbase"] = pl.concat([self.dbs["Clipbase"], new_row])
         if self.active_db_name == "Clipbase": self.reset_to_full_base()
 
+    def add_game(self, db_name, game_data):
+        """Añade una partida a cualquier base de datos de forma Lazy"""
+        if db_name in self.dbs:
+            if "id" not in game_data or game_data["id"] is None:
+                game_data["id"] = int(time.time() * 1000)
+            
+            new_row = pl.DataFrame([game_data], schema=GAME_SCHEMA).lazy()
+            self.dbs[db_name] = pl.concat([self.dbs[db_name], new_row])
+            
+            if db_name != "Clipbase":
+                self.set_dirty(db_name, True)
+                
+            if self.active_db_name == db_name:
+                self.reset_to_full_base()
+            return True
+        return False
+
     def delete_filtered_games(self):
         if self.current_filter_query is None: return False
         name = self.active_db_name
         if name in self.dbs:
             self.dbs[name] = self.dbs[name].join(self.current_filter_query.select("id"), on="id", how="anti")
+            self.set_dirty(name)
             self.reset_to_full_base()
             self.filter_updated.emit(None)
             return True
@@ -243,6 +245,7 @@ class DBManager(QObject):
     def delete_game(self, db_name, game_id):
         if db_name in self.dbs: 
             self.dbs[db_name] = self.dbs[db_name].filter(pl.col("id") != game_id)
+            self.set_dirty(db_name)
             if self.active_db_name == db_name: self.reset_to_full_base()
             return True
         return False
@@ -253,6 +256,7 @@ class DBManager(QObject):
                 pl.when(pl.col("id") == game_id).then(pl.lit(new_data[k])).otherwise(pl.col(k)).alias(k) 
                 for k in new_data.keys() if k in GAME_SCHEMA
             ])
+            self.set_dirty(db_name)
             if self.active_db_name == db_name: self.reset_to_full_base()
             return True
         return False

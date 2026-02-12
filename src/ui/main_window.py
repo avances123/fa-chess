@@ -181,8 +181,8 @@ class MainWindow(QMainWindow):
         
         self.btn_save = QPushButton(qta.icon('fa5s.save', color='#1976d2'), " Guardar")
         self.btn_save.setStyleSheet(STYLE_ACTION_BUTTON)
-        self.btn_save.setToolTip("Guardar cambios en la base activa")
-        self.btn_save.clicked.connect(self.save_to_active_db)
+        self.btn_save.setToolTip("Añadir esta partida a la base activa")
+        self.btn_save.clicked.connect(self.add_current_game_to_db)
         
         self.btn_clip = QPushButton(qta.icon('fa5s.clipboard', color='#2e7d32'), " a Clipbase")
         self.btn_clip.setStyleSheet(STYLE_ACTION_BUTTON)
@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
         self.db_sidebar.invert_filter_requested.connect(self.trigger_invert_filter)
         self.db_sidebar.clear_filter_requested.connect(self.reset_filters)
         self.db_sidebar.db_switched.connect(self.switch_database_with_feedback)
+        self.db_sidebar.readonly_toggled.connect(self.toggle_db_readonly_logic)
         self.db_sidebar.context_menu_requested.connect(self.on_db_list_context_menu)
         db_layout.addWidget(self.db_sidebar, 1)
         
@@ -414,6 +415,14 @@ class MainWindow(QMainWindow):
         export_filtered_pgn.setShortcut("Ctrl+E")
         export_filtered_pgn.triggered.connect(self.export_filter_to_pgn)
         export_menu.addAction(export_filtered_pgn)
+        
+        file_menu.addSeparator()
+        
+        # --- ACCIÓN GUARDAR (PERSISTIR) ---
+        self.save_action = QAction(qta.icon('fa5s.save', color='#1976d2'), "&Guardar Base (Persistir)", self)
+        self.save_action.setShortcut("Ctrl+S")
+        self.save_action.triggered.connect(self.save_to_active_db)
+        file_menu.addAction(self.save_action)
         
         file_menu.addSeparator()
         settings_action = QAction(qta.icon('fa5s.cog'), "&Configuración...", self)
@@ -614,14 +623,19 @@ class MainWindow(QMainWindow):
             edit_action.triggered.connect(self.edit_selected_game)
             menu.addAction(edit_action)
 
-        # SECCIÓN DE BORRADO (Sempre visible si es RW)
+        # SECCIÓN DE BORRADO
         is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
         if not is_readonly or self.db.active_db_name == "Clipbase":
             menu.addSeparator()
-            del_text = f"❌ Eliminar {count} partidas seleccionadas" if count > 1 else "❌ Eliminar Partida"
+            del_text = f"❌ Eliminar {count} partidas seleccionadas" if count > 1 else "❌ Eliminar partida seleccionada"
             del_action = QAction(qta.icon('fa5s.trash-alt', color='#c62828'), del_text, self)
             del_action.triggered.connect(lambda: self.delete_selected_games_logic(selected_ids))
             menu.addAction(del_action)
+        else:
+            menu.addSeparator()
+            locked_act = QAction(qta.icon('fa5s.lock', color='#888'), "Base de solo lectura (No se puede borrar)", self)
+            locked_act.setEnabled(False)
+            menu.addAction(locked_act)
 
         menu.exec(self.db_table.viewport().mapToGlobal(pos))
 
@@ -640,9 +654,13 @@ class MainWindow(QMainWindow):
             self.refresh_db_list()
 
     def copy_selected_games_logic(self, ids):
-        writable_dbs = [name for name, meta in self.db.db_metadata.items() if not meta.get("read_only", True) or name == "Clipbase"]
+        active_db = self.db.active_db_name
+        # Filtramos: bases RW que NO sean la base activa
+        writable_dbs = [name for name, meta in self.db.db_metadata.items() 
+                       if (not meta.get("read_only", True) or name == "Clipbase") and name != active_db]
+        
         if not writable_dbs: 
-            QMessageBox.warning(self, "Copiar Partidas", "No hay bases de datos con permiso de escritura abiertas.")
+            QMessageBox.warning(self, "Copiar Partidas", "No hay otras bases de datos con permiso de escritura abiertas.")
             return
             
         from PySide6.QtWidgets import QInputDialog
@@ -719,27 +737,39 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Error al generar informe: {e}", 5000)
             QMessageBox.critical(self, "Error", f"Error al generar el informe: {e}")
 
-    def toggle_db_readonly(self, item, status):
+    def toggle_db_readonly_logic(self, item):
+        if not item: return
         name = item.text()
-        if self.db.set_readonly(name, status):
-            if status: item.setForeground(QColor("#888888")); item.setIcon(qta.icon('fa5s.lock', color='#888888'))
-            else: item.setForeground(QColor("#000000")); item.setIcon(qta.icon('fa5s.unlock', color='#2e7d32'))
-            state = "Solo Lectura" if status else "Lectura/Escritura"; self.statusBar().showMessage(f"Base '{name}' ahora en modo {state}", 3000)
+        if name == "Clipbase": return
+        
+        # Obtener estado actual y hacer toggle
+        current_ro = self.db.db_metadata.get(name, {}).get("read_only", True)
+        new_status = not current_ro
+        
+        # Aplicar cambio en el motor
+        if self.db.set_readonly(name, new_status):
+            # Cambiar visualmente
+            if new_status: 
+                item.setIcon(qta.icon('fa5s.lock', color='#888888'))
+                item.setForeground(QColor("#888888"))
+            else: 
+                item.setIcon(qta.icon('fa5s.unlock', color='#2e7d32'))
+                item.setForeground(QColor("#000000"))
+            
+            self.statusBar().showMessage(f"Base '{name}': {'Solo Lectura' if new_status else 'Edición Habilitada'}", 3000)
+            self.refresh_db_list()
+
+    def toggle_db_readonly(self, item, status):
+        # Mantenemos este método por compatibilidad con el menú contextual antiguo
+        self.toggle_db_readonly_logic(item, status)
 
     def on_db_list_context_menu(self, pos):
         item = self.db_sidebar.list_widget.itemAt(pos)
         if not item or item.text() == "Clipbase": return
         name = item.text(); is_readonly = self.db.db_metadata.get(name, {}).get("read_only", True); menu = QMenu()
-        if is_readonly: 
-            unlock_action = QAction(qta.icon('fa5s.unlock'), " Permitir Escritura", self)
-            unlock_action.triggered.connect(lambda: self.toggle_db_readonly(item, False))
-            menu.addAction(unlock_action)
-        else: 
-            lock_action = QAction(qta.icon('fa5s.lock'), " Poner Solo Lectura", self)
-            lock_action.triggered.connect(lambda: self.toggle_db_readonly(item, True))
-            menu.addAction(lock_action)
-            
-            # NUEVA ACCIÓN: PERSISTIR BASE
+        
+        if not is_readonly: 
+            # Solo ofrecemos persistir si ya está en modo escritura
             persist_action = QAction(qta.icon('fa5s.save', color='#1976d2'), " Persistir Base (Guardar en Disco)", self)
             persist_action.triggered.connect(self.save_to_active_db)
             menu.addAction(persist_action)
@@ -774,42 +804,46 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Base '{name}' quitada de la lista", 3000)
 
     def save_to_active_db(self):
+        """Persiste los cambios actuales de la base activa en el disco"""
         db_name = self.db.active_db_name
         is_readonly = self.db.db_metadata.get(db_name, {}).get("read_only", True)
         
         if is_readonly and db_name != "Clipbase": 
-            QMessageBox.warning(self, "Base de Solo Lectura", f"La base '{db_name}' es de solo lectura. Desbloquéala desde el menú lateral para guardar.")
+            QMessageBox.warning(self, "Base de Solo Lectura", f"La base '{db_name}' es de solo lectura. Desbloquéala para guardar.")
             return
             
         if db_name == "Clipbase":
-            # Para la Clipbase, esto solo guarda la partida actual al LazyFrame en RAM
-            self.save_current_game_to_memory(db_name)
-            self.statusBar().showMessage("Partida guardada en Clipbase (Memoria)", 3000)
+            self.statusBar().showMessage("Clipbase es volátil (se mantiene en memoria)", 3000)
         else:
-            # Para bases normales, primero guardamos la partida actual en el LazyFrame
-            self.save_current_game_to_memory(db_name)
-            # Y luego persistimos TODO el LazyFrame al disco (incluyendo borrados previos)
             self.progress.setRange(0, 0); self.progress.show()
             self.statusBar().showMessage(f"Persistiendo cambios en {db_name}...")
             QApplication.processEvents()
-            
             try:
                 if self.db.save_active_db():
-                    self.statusBar().showMessage(f"Base '{db_name}' actualizada correctamente.", 5000)
+                    self.db.set_dirty(db_name, False)
+                    self.refresh_db_list()
+                    self.statusBar().showMessage(f"Base '{db_name}' guardada físicamente.", 5000)
                 else:
-                    self.statusBar().showMessage("Error al guardar cambios físicos.", 5000)
+                    self.statusBar().showMessage("No hay cambios que persistir.", 5000)
             finally:
                 self.progress.hide()
 
-    def save_current_game_to_memory(self, db_name):
-        """Helper para volcar la partida actual al LazyFrame en memoria"""
+    def add_current_game_to_db(self):
+        """Añade la partida actual del tablero a la base de datos activa (en memoria)"""
+        db_name = self.db.active_db_name
+        is_readonly = self.db.db_metadata.get(db_name, {}).get("read_only", True)
+        
+        if is_readonly and db_name != "Clipbase":
+            QMessageBox.warning(self, "Base de Solo Lectura", "No se puede añadir la partida a una base de solo lectura.")
+            return
+
+        # 1. Extraer datos de la partida actual
         line_uci = self.game.current_line_uci
         import chess.polyglot; board = chess.Board(); hashes = [chess.polyglot.zobrist_hash(board)]
         for move in self.game.full_mainline: 
             board.push(move)
             hashes.append(chess.polyglot.zobrist_hash(board))
             
-        from src.core.db_manager import GAME_SCHEMA
         game_data = {
             "id": int(time.time() * 1000), 
             "white": "Jugador Blanco", "black": "Jugador Negro", 
@@ -819,14 +853,13 @@ class MainWindow(QMainWindow):
             "line": " ".join([m.uci() for m in self.game.full_mainline[:12]]), 
             "full_line": line_uci, "fens": hashes
         }
-        
-        if db_name == "Clipbase": 
-            self.db.add_to_clipbase(game_data)
-        else: 
-            new_row = pl.DataFrame([game_data], schema=GAME_SCHEMA).lazy()
-            self.db.dbs[db_name] = pl.concat([self.db.dbs[db_name], new_row])
-        
-        self.db.set_active_db(db_name)
+
+        # 2. Añadir vía DBManager
+        if self.db.add_game(db_name, game_data):
+            self.statusBar().showMessage(f"Partida añadida a {db_name} (pendiente de persistir)", 3000)
+            self.refresh_db_list()
+        else:
+            self.statusBar().showMessage("Error al añadir partida", 5000)
 
     def export_filter_to_pgn(self):
         df = self.db.current_filter_df if self.db.current_filter_df is not None else self.db.get_active_df()
@@ -933,6 +966,8 @@ class MainWindow(QMainWindow):
             self.append_worker.progress.connect(self.progress.setValue)
             # USAR RELOAD_DB PARA REFRESCAR EL PUNTERO AL ARCHIVO
             self.append_worker.finished.connect(lambda: self.db.reload_db(active_db)) 
+            self.append_worker.finished.connect(lambda: self.db.set_dirty(active_db, True))
+            self.append_worker.finished.connect(self.refresh_db_list)
             self.append_worker.finished.connect(lambda: self.progress.hide())
             self.append_worker.start()
 
@@ -1007,6 +1042,28 @@ class MainWindow(QMainWindow):
         lazy_active = self.db.dbs.get(self.db.active_db_name)
         if lazy_active is None: return
         
+        # --- ACTUALIZAR INDICADORES "DIRTY" EN EL SIDEBAR ---
+        for i in range(self.db_sidebar.list_widget.count()):
+            it = self.db_sidebar.list_widget.item(i)
+            db_name = it.data(Qt.UserRole + 1) or it.text().replace("*", "").strip()
+            
+            # Guardamos el nombre original sin asterisco en un rol oculto si no está
+            if not it.data(Qt.UserRole + 1):
+                it.setData(Qt.UserRole + 1, db_name)
+            
+            is_dirty = self.db.is_dirty(db_name)
+            if is_dirty:
+                it.setText(f"{db_name} *")
+                if not self.db.db_metadata.get(db_name, {}).get("read_only", True):
+                    it.setForeground(QColor("#1976d2")) # Azul si es dirty y RW
+            else:
+                it.setText(db_name)
+                # Restaurar color según RO/RW
+                if self.db.db_metadata.get(db_name, {}).get("read_only", True):
+                    it.setForeground(QColor("#888888"))
+                else:
+                    it.setForeground(QColor("#000000"))
+
         # Actualizar estado del botón Guardar
         is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
         can_save = (not is_readonly) or (self.db.active_db_name == "Clipbase")
