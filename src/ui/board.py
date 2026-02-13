@@ -10,6 +10,7 @@ from shiboken6 import isValid
 class ChessBoard(QGraphicsView):
     piece_drag_started = Signal()
     piece_drag_finished = Signal()
+    piece_moved = Signal(str) # UCI del movimiento
 
     def __init__(self, board, parent_main):
         super().__init__()
@@ -89,17 +90,19 @@ class ChessBoard(QGraphicsView):
         
         if sq is not None:
             piece = self.board.piece_at(sq)
+            # Permitimos mover si es el turno de la pieza, 
+            # ignorando validaciones externas de MainWindow en modo puzzle
             if piece and piece.color == self.board.turn:
                 self.selected_square = sq
-                self.update_board() # Para mostrar jugadas legales
+                self.update_board()
                 c, r = self.get_square_coords(sq)
                 target_pos = QPointF(c * self.square_size, r * self.square_size)
                 
                 for item in self.piece_items:
-                    if (item.pos() - target_pos).manhattanLength() < 5:
+                    if isValid(item) and (item.pos() - target_pos).manhattanLength() < 5:
                         self.drag_item = item
                         self.drag_item.setZValue(100)
-                        self.piece_drag_started.emit() # Avisar que empezamos a arrastrar
+                        self.piece_drag_started.emit()
                         break
         super().mousePressEvent(event)
 
@@ -128,7 +131,14 @@ class ChessBoard(QGraphicsView):
                         move.promotion = self.select_promotion_piece()
 
                 if move in self.board.legal_moves:
-                    self.parent_main.game.make_move(move)
+                    # Si el padre tiene un controlador de juego (Análisis), lo usamos para el historial
+                    if hasattr(self.parent_main, 'game') and self.parent_main.game is not None:
+                        self.parent_main.game.make_move(move)
+                    else:
+                        # Si no, simplemente ejecutamos el movimiento en el tablero local
+                        self.board.push(move)
+                    
+                    self.piece_moved.emit(move.uci())
             
             self.selected_square = None
             self.drag_item = None

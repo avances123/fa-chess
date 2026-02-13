@@ -30,6 +30,7 @@ from src.ui.widgets.analysis_report import AnalysisReport
 from src.ui.widgets.game_info_header import GameInfoHeader
 from src.ui.widgets.db_sidebar import DBSidebar
 from src.ui.widgets.opening_tree_table import OpeningTreeTable
+from src.ui.widgets.puzzle_browser import PuzzleBrowserWidget
 from src.ui.utils import format_qty
 from src.ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER, 
                        STYLE_PROGRESS_BAR, STYLE_BADGE_NORMAL, STYLE_BADGE_SUCCESS, 
@@ -238,12 +239,18 @@ class MainWindow(QMainWindow):
         self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
         db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
         
+        # --- TAB 3: EJERCICIOS (Lichess DB) ---
+        self.tab_puzzles = PuzzleBrowserWidget(self)
+        self.tabs.addTab(self.tab_puzzles, "Ejercicios")
+        
         self.progress = QProgressBar(); self.progress.setMaximumWidth(150); self.progress.setFixedHeight(14); self.progress.setTextVisible(True); self.progress.setVisible(False)
         self.statusBar().addPermanentWidget(self.progress)
 
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
-        for path in getattr(self, 'pending_dbs', []):
-            if os.path.exists(path): self.load_parquet(path)
+        pending = getattr(self, 'pending_dbs', [])
+        for path in pending:
+            if path and os.path.exists(path):
+                self.load_parquet(path)
 
     def start_full_analysis(self):
         if self.action_engine.isChecked(): self.action_engine.toggle(); self.toggle_engine(False)
@@ -348,16 +355,25 @@ class MainWindow(QMainWindow):
     def run_stats_worker(self):
         if not hasattr(self, '_active_workers'): self._active_workers = []
         self._active_workers = [w for w in self._active_workers if w.isRunning()]
+        
+        import chess.polyglot
+        current_hash = chess.polyglot.zobrist_hash(self.game.board)
+        
+        # --- CONSULTA SÍNCRONA DE CACHÉ (INSTANTÁNEA) ---
+        cached_res = self.db.get_cached_stats(current_hash)
+        if cached_res is not None:
+            # Si está en caché, actualizamos directamente sin spinner ni hilos
+            self.on_stats_finished(cached_res)
+            return
+
         if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
             try: self.stats_worker.finished.disconnect(); self._active_workers.append(self.stats_worker)
             except: pass
         
-        # MOSTRAR SPINNER
+        # Solo mostramos el spinner si realmente vamos a calcular
         self.opening_tree.set_loading(True)
-        
         self.progress.setRange(0, 0); self.progress.show(); self.statusBar().showMessage("Calculando estadísticas...")
-        import chess.polyglot
-        current_hash = chess.polyglot.zobrist_hash(self.game.board)
+        
         self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash)
         self.stats_worker.finished.connect(self.on_stats_finished); self.stats_worker.start()
 
@@ -687,7 +703,7 @@ class MainWindow(QMainWindow):
 
     def _fix_tab_buttons(self):
         """Elimina físicamente los botones de cierre de las pestañas fijas"""
-        for i in [0, 1]:
+        for i in [0, 1, 2]: # Tablero, Gestor, Ejercicios
             for side in [QTabBar.LeftSide, QTabBar.RightSide]:
                 btn = self.tabs.tabBar().tabButton(i, side)
                 if btn:
@@ -976,13 +992,24 @@ class MainWindow(QMainWindow):
         if path: self.load_parquet(path)
 
     def load_parquet(self, path):
-        self.progress.hide(); name = self.db.load_parquet(path)
+        if not path or not os.path.exists(path):
+            return None
+            
+        self.progress.hide()
+        name = self.db.load_parquet(path)
+        if not name: return None # Error en carga interna
+        
         items = self.db_sidebar.list_widget.findItems(name, Qt.MatchExactly)
         if not items:
             item = self.db_sidebar.add_db_item(name)
+            # Por defecto las externas son solo lectura
             item.setForeground(QColor("#888888")); item.setIcon(qta.icon('fa5s.lock', color='#888888'))
-        else: item = items[0]
-        self.db_sidebar.list_widget.setCurrentItem(item); self.save_config()
+        else: 
+            item = items[0]
+            
+        self.db_sidebar.list_widget.setCurrentItem(item)
+        self.save_config()
+        return name
 
     def open_settings(self):
         dialog = SettingsDialog(self.board_ana.color_light, self.board_ana.color_dark, self)
@@ -1107,7 +1134,8 @@ class MainWindow(QMainWindow):
         config = {
             "perf_threshold": getattr(self, 'perf_threshold', 25),
             "colors": colors,
-            "dbs": dbs_info
+            "dbs": dbs_info,
+            "puzzle_db_path": getattr(self, 'puzzle_db_path', None)
         }
         
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -1116,11 +1144,18 @@ class MainWindow(QMainWindow):
     def load_config(self):
         self.def_light, self.def_dark = "#eeeed2", "#8ca2ad"
         self.perf_threshold = 25
+        self.puzzle_db_path = None
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.pending_dbs = [info["path"] if isinstance(info, dict) else info for info in data.get("dbs", [])]
+                self.puzzle_db_path = data.get("puzzle_db_path")
+                
+                # Cargar en el widget de puzzles si ya existe
+                if self.puzzle_db_path and os.path.exists(self.puzzle_db_path):
+                    if hasattr(self, 'tab_puzzles'):
+                        self.tab_puzzles.load_db(self.puzzle_db_path)
                 colors = data.get("colors")
                 if colors:
                     self.def_light = colors.get("light", self.def_light)

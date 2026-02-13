@@ -7,6 +7,7 @@ CONFIG_FILE = os.path.expanduser("~/.config/fa-chess.json")
 
 # Archivos de datos
 ECO_FILE = os.path.join(ASSETS_DIR, "scid.eco")
+PUZZLE_FILE = os.path.join(ASSETS_DIR, "puzzle.parquet")
 
 # Estilos CSS (Tema Claro/Lichess)
 LIGHT_STYLE = """

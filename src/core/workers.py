@@ -87,6 +87,30 @@ class PGNAppendWorker(QThread):
                 except: pass
             self.finished.emit()
 
+class PuzzleSaveWorker(QThread):
+    def __init__(self, path, puzzle_id, status):
+        super().__init__()
+        self.path = path
+        self.puzzle_id = puzzle_id
+        self.status = status
+
+    def run(self):
+        try:
+            # Operación atómica en disco
+            df = pl.read_parquet(self.path)
+            if "status" not in df.columns:
+                df = df.with_columns(pl.lit("pending").alias("status"))
+            
+            df = df.with_columns(
+                pl.when(pl.col("PuzzleId") == self.puzzle_id)
+                .then(pl.lit(self.status))
+                .otherwise(pl.col("status"))
+                .alias("status")
+            )
+            df.write_parquet(self.path)
+        except Exception as e:
+            print(f"Error en segundo plano guardando puzzle: {e}")
+
 class StatsWorker(QThread):
     finished = Signal(object)
 
