@@ -7,9 +7,11 @@ class EngineWorker(QThread):
     # Señal que envía: (evaluación_str, mejor_movimiento, línea_principal)
     info_updated = Signal(str, str, list)
 
-    def __init__(self, engine_path="/usr/bin/stockfish"):
+    def __init__(self, engine_path="/usr/bin/stockfish", threads=1, hash_mb=64):
         super().__init__()
         self.engine_path = engine_path
+        self.threads = threads
+        self.hash_mb = hash_mb
         self.engine = None
         self.board = None
         self._is_running = True
@@ -29,37 +31,51 @@ class EngineWorker(QThread):
 
     def run(self):
         try:
-            # En python-chess síncrono, popen_uci devuelve directamente (transport, engine)
-            # No es una corrutina.
+            # Iniciar motor con parámetros configurados
             self.engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
+            self.engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
+            
+            last_fen = None
             
             while self._is_running:
-                if self.current_fen:
+                if self.current_fen and self.current_fen != last_fen:
+                    last_fen = self.current_fen
                     board = chess.Board(self.current_fen)
-                    # Usamos la API síncrona de SimpleEngine
-                    info = self.engine.analyse(board, chess.engine.Limit(time=0.1))
                     
-                    if not self._is_running or self.current_fen != board.fen():
-                        continue
-                    
-                    score = info.get("score")
-                    pv = info.get("pv")
-                    
-                    if score and pv:
-                        score_str = self._format_score(score, board.turn)
-                        best_move_uci = pv[0].uci() if pv else ""
-                        
-                        mainline = []
-                        temp_board = board.copy()
-                        for m in pv[:5]:
-                            if m in temp_board.legal_moves:
-                                mainline.append(temp_board.san(m))
-                                temp_board.push(m)
-                            else:
+                    # Modo de análisis infinito (sin límite de tiempo ni profundidad)
+                    with self.engine.analysis(board) as analysis:
+                        for info in analysis:
+                            # Si la posición cambia globalmente o cerramos, salir del bucle interno
+                            if not self._is_running or self.current_fen != board.fen():
                                 break
-                        self.info_updated.emit(score_str, best_move_uci, mainline)
+                            
+                            score = info.get("score")
+                            pv = info.get("pv")
+                            depth = info.get("depth")
+                            nps = info.get("nps") # Nodos por segundo
+                            
+                            if score and pv and depth:
+                                score_str = self._format_score(score, board.turn)
+                                # Añadir información de profundidad y velocidad al string
+                                if nps:
+                                    speed = f"{int(nps/1000)}k nps"
+                                    full_info = f"d:{depth} | {speed} | {score_str}"
+                                else:
+                                    full_info = f"d:{depth} | {score_str}"
+                                    
+                                best_move_uci = pv[0].uci() if pv else ""
+                                
+                                mainline = []
+                                temp_board = board.copy()
+                                for m in pv[:5]:
+                                    if m in temp_board.legal_moves:
+                                        mainline.append(temp_board.san(m))
+                                        temp_board.push(m)
+                                    else:
+                                        break
+                                self.info_updated.emit(full_info, best_move_uci, mainline)
                 
-                self.msleep(100)
+                self.msleep(50)
                     
         except Exception as e:
             print(f"Error en el motor: {e}")
@@ -84,28 +100,33 @@ class FullAnalysisWorker(QThread):
     finished = Signal()
     error_occurred = Signal(str) # Nueva señal de error
 
-    def __init__(self, moves, depth=10):
+    def __init__(self, moves, depth=10, engine_path=None, threads=1, hash_mb=64):
         super().__init__()
         self.moves = moves
         self.depth = depth
+        self.engine_path = engine_path
+        self.threads = threads
+        self.hash_mb = hash_mb
         self.running = True
 
     def run(self):
         try:
             import shutil
-            # Búsqueda robusta del motor
-            engine_path = shutil.which("stockfish")
-            if not engine_path:
-                for p in ["/usr/games/stockfish", "/usr/bin/stockfish", "/usr/local/bin/stockfish"]:
-                    if os.path.exists(p):
-                        engine_path = p
-                        break
+            # Búsqueda robusta del motor si no se proporciona
+            if not self.engine_path:
+                self.engine_path = shutil.which("stockfish")
+                if not self.engine_path:
+                    for p in ["/usr/games/stockfish", "/usr/bin/stockfish", "/usr/local/bin/stockfish"]:
+                        if os.path.exists(p):
+                            self.engine_path = p
+                            break
             
-            if not engine_path:
-                self.error_occurred.emit("No se encontró el ejecutable de Stockfish. Asegúrate de tenerlo instalado.")
+            if not self.engine_path or not os.path.exists(self.engine_path):
+                self.error_occurred.emit(f"No se encontró Stockfish en: {self.engine_path}")
                 return
 
-            engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+            engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
+            engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
             
             board = chess.Board()
             # Analizar posición inicial (índice 0)

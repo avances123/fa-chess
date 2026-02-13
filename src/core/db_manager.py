@@ -16,6 +16,7 @@ class DBManager(QObject):
         self.dbs = {} 
         self.db_metadata = {}
         self.active_db_name = "Clipbase"
+        self.reference_db_name = None # None significa "Usar la base activa"
         self.current_filter_query = None
         self.current_filter_df = None
         self.filter_id = 0
@@ -118,6 +119,27 @@ class DBManager(QObject):
             self.active_db_changed.emit(name)
             self.filter_updated.emit(None)
 
+    def set_reference_db(self, name):
+        """Establece qué base de datos se usa para el árbol de aperturas (None = seguir activa)"""
+        self.reference_db_name = name if name != "Base Activa" else None
+        self.stats_cache.clear() # Limpiar caché al cambiar de referencia
+        return True
+
+    def get_reference_path(self):
+        """Devuelve la ruta de archivo de la base que se usa para el árbol"""
+        target = self.reference_db_name if self.reference_db_name else self.active_db_name
+        return self.db_metadata.get(target, {}).get("path")
+
+    def get_reference_view(self):
+        """Devuelve la vista de la base de referencia (o la activa si no hay referencia fija)"""
+        target = self.reference_db_name if self.reference_db_name else self.active_db_name
+        
+        # Si la base objetivo es la activa, respetamos el filtro actual
+        if target == self.active_db_name and self.current_filter_query is not None:
+            return self.current_filter_query
+            
+        return self.dbs.get(target)
+
     def get_current_view(self):
         if self.current_filter_query is not None: return self.current_filter_query
         return self.dbs.get(self.active_db_name)
@@ -185,6 +207,10 @@ class DBManager(QObject):
         lazy = self.dbs.get(self.active_db_name)
         return lazy.head(1000).collect() if lazy is not None else None
     
+    def add_to_clipbase(self, game_data):
+        """Añade una partida directamente a la Clipbase"""
+        return self.add_game("Clipbase", game_data)
+
     def add_game(self, db_name, game_data):
         logger.info(f"DBManager: Añadiendo partida a {db_name}")
         if db_name in self.dbs:

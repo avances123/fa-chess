@@ -1,8 +1,10 @@
 import os
 import json
 import time
+import io
 from datetime import datetime
 import chess
+import chess.pgn
 import polars as pl
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTableWidget, QTableWidgetItem, QLabel, QPushButton, 
@@ -14,7 +16,7 @@ from PySide6.QtCore import Qt, QPointF, QTimer, QSize
 from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QColor, QBrush
 import qtawesome as qta
 
-from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE, APP_DB_FILE
+from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE, APP_DB_FILE, logger
 from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker, PGNAppendWorker, PuzzleGeneratorWorker
 from src.core.eco import ECOManager
 from src.core.db_manager import DBManager
@@ -70,6 +72,7 @@ class MainWindow(QMainWindow):
         # Conectar señales del gestor de base de datos
         self.db.active_db_changed.connect(self.refresh_db_list)
         self.db.active_db_changed.connect(self.update_stats)
+        self.db.active_db_changed.connect(self.refresh_reference_combo)
         
         self.db.filter_updated.connect(self.refresh_db_list)
         self.db.filter_updated.connect(self.update_stats)
@@ -96,7 +99,6 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F"), self, self.flip_boards)
         QShortcut(QKeySequence("E"), self, self.toggle_engine_shortcut)
         QShortcut(QKeySequence("S"), self, self.search_current_position)
-
     def flip_boards(self):
         self.board_ana.flip()
 
@@ -177,6 +179,7 @@ class MainWindow(QMainWindow):
         self.opening_tree.move_selected.connect(lambda uci: self.game.make_move(chess.Move.from_uci(uci)))
         self.opening_tree.move_hovered.connect(self.board_ana.set_hover_move)
         self.opening_tree.label_global_stats.clicked.connect(self.open_search)
+        self.opening_tree.reference_changed.connect(self.change_reference_db)
         p_ana_layout.addWidget(self.opening_tree)
         
         self.tabs_side = QTabWidget()
@@ -191,17 +194,17 @@ class MainWindow(QMainWindow):
         
         self.btn_save = QPushButton(qta.icon('fa5s.save', color='#1976d2'), " Guardar")
         self.btn_save.setStyleSheet(STYLE_ACTION_BUTTON)
-        self.btn_save.setToolTip("Añadir esta partida a la base activa")
-        self.btn_save.clicked.connect(self.add_current_game_to_db)
+        self.btn_save.setToolTip("Persistir cambios: Guarda la base de datos activa en el disco (Ctrl+S)")
+        self.btn_save.clicked.connect(self.save_to_active_db)
         
         self.btn_clip = QPushButton(qta.icon('fa5s.clipboard', color='#2e7d32'), " a Clipbase")
         self.btn_clip.setStyleSheet(STYLE_ACTION_BUTTON)
-        self.btn_clip.setToolTip("Copiar esta partida a la Clipbase")
+        self.btn_clip.setToolTip("Copiar a Clipbase: Añade la partida actual a la base temporal para edición (Ctrl+V para pegar)")
         self.btn_clip.clicked.connect(self.add_to_clipbase)
         
         self.btn_new = QPushButton(qta.icon('fa5s.file-alt', color='#555'), " Nueva")
         self.btn_new.setStyleSheet(STYLE_ACTION_BUTTON)
-        self.btn_new.setToolTip("Empezar una nueva partida")
+        self.btn_new.setToolTip("Nueva Partida: Limpia el tablero y empieza de cero")
         self.btn_new.clicked.connect(self.start_new_game)
         
         game_actions_layout.addWidget(self.btn_save)
@@ -264,6 +267,8 @@ class MainWindow(QMainWindow):
         for path in pending:
             if path and os.path.exists(path):
                 self.load_parquet(path)
+        
+        self.refresh_reference_combo()
 
     def start_full_analysis(self):
         if self.action_engine.isChecked(): self.action_engine.toggle(); self.toggle_engine(False)
@@ -271,7 +276,15 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show()
         total_moves = len(self.game.full_mainline) + 1
         self.game_evals = [0] * total_moves; self.eval_graph.set_evaluations(self.game_evals)
-        self.analysis_worker = FullAnalysisWorker(self.game.full_mainline)
+        
+        self.analysis_worker = FullAnalysisWorker(
+            self.game.full_mainline,
+            depth=self.engine_depth,
+            engine_path=self.engine_path,
+            threads=self.engine_threads,
+            hash_mb=self.engine_hash
+        )
+        
         self.analysis_worker.progress.connect(lambda curr, total: self.progress.setValue(int((curr/total)*100)))
         self.analysis_worker.analysis_result.connect(self.on_analysis_update)
         self.analysis_worker.finished.connect(self.on_analysis_finished)
@@ -293,7 +306,14 @@ class MainWindow(QMainWindow):
     def toggle_engine(self, checked):
         self.eval_bar.setVisible(checked)
         if checked:
-            self.engine_worker = EngineWorker(); self.engine_worker.info_updated.connect(self.on_engine_update); self.engine_worker.update_position(self.game.board.fen()); self.engine_worker.start()
+            self.engine_worker = EngineWorker(
+                engine_path=self.engine_path,
+                threads=self.engine_threads,
+                hash_mb=self.engine_hash
+            )
+            self.engine_worker.info_updated.connect(self.on_engine_update)
+            self.engine_worker.update_position(self.game.board.fen())
+            self.engine_worker.start()
         else:
             if hasattr(self, 'engine_worker'): self.engine_worker.stop(); self.engine_worker.wait()
             self.label_eval.setText(""); self.board_ana.set_engine_move(None)
@@ -345,6 +365,29 @@ class MainWindow(QMainWindow):
             self.game.load_uci_line(row["full_line"]); self.game.go_start()
             self.game_header.update_info(row); self.tabs.setCurrentIndex(0)
 
+    def change_reference_db(self, name):
+        if self.db.set_reference_db(name):
+            self.update_stats()
+
+    def refresh_reference_combo(self):
+        """Actualiza la lista de bases disponibles en el combo del árbol"""
+        if not hasattr(self, 'opening_tree'): return
+        self.opening_tree.combo_ref.blockSignals(True)
+        current = self.opening_tree.combo_ref.currentText()
+        self.opening_tree.combo_ref.clear()
+        self.opening_tree.combo_ref.addItem("Base Activa")
+        
+        # Añadir todas las bases abiertas (excepto Clipbase si ya es la activa, para no duplicar info mentalmente)
+        for name in sorted(self.db.dbs.keys()):
+            self.opening_tree.combo_ref.addItem(name)
+            
+        # Intentar restaurar la selección
+        idx = self.opening_tree.combo_ref.findText(current)
+        if idx >= 0: self.opening_tree.combo_ref.setCurrentIndex(idx)
+        else: self.opening_tree.combo_ref.setCurrentIndex(0)
+        
+        self.opening_tree.combo_ref.blockSignals(False)
+
     def jump_to_move_link(self, url): self.game.jump_to_move(int(url.toString()))
 
     def update_ui(self):
@@ -385,9 +428,13 @@ class MainWindow(QMainWindow):
         
         # Solo mostramos el spinner si realmente vamos a calcular
         self.opening_tree.set_loading(True)
-        self.progress.setRange(0, 0); self.progress.show(); self.statusBar().showMessage("Calculando estadísticas...")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.show()
+        self.statusBar().showMessage("Calculando estadísticas...")
         
         self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash, app_db=self.app_db)
+        self.stats_worker.progress.connect(self.progress.setValue)
         self.stats_worker.finished.connect(self.on_stats_finished); self.stats_worker.start()
 
     def update_stats(self):
@@ -420,7 +467,12 @@ class MainWindow(QMainWindow):
         icon = qta.icon(icon_name, color=color) if icon_name else None
         action = QAction(icon, text, self)
         if shortcut:
-            action.setShortcut(QKeySequence.fromString(shortcut))
+            if isinstance(shortcut, str):
+                action.setShortcut(QKeySequence.fromString(shortcut))
+            else:
+                action.setShortcut(shortcut)
+            # Asegurar que el atajo funcione en toda la ventana
+            action.setShortcutContext(Qt.WindowShortcut)
         if slot:
             action.triggered.connect(slot)
         if tip:
@@ -501,6 +553,13 @@ class MainWindow(QMainWindow):
             "&Eliminar Archivo de Base...", 'fa5s.dumpster-fire', slot=self.delete_current_db_file, color='#c62828'
         ))
 
+    def _create_edit_menu(self, menubar):
+        edit_menu = menubar.addMenu("&Edición")
+        edit_menu.addAction(self._create_action(
+            "&Pegar PGN", 'fa5s.paste', QKeySequence.Paste, self.paste_pgn_to_clipbase,
+            tip="Pegar partidas PGN desde el portapapeles a la Clipbase", color='#2e7d32'
+        ))
+
     def _create_player_menu(self, menubar):
         player_menu = menubar.addMenu("&Jugador")
         player_menu.addAction(self._create_action(
@@ -531,6 +590,7 @@ class MainWindow(QMainWindow):
     def init_menu(self):
         menubar = self.menuBar()
         self._create_file_menu(menubar)
+        self._create_edit_menu(menubar)
         self._create_database_menu(menubar)
         self._create_player_menu(menubar)
         self._create_board_menu(menubar)
@@ -564,6 +624,88 @@ class MainWindow(QMainWindow):
         game_data = {"id": int(time.time()), "white": "Jugador Blanco", "black": "Jugador Negro", "w_elo": 2500, "b_elo": 2500, "result": "*", "date": datetime.now().strftime("%Y.%m.%d"), "event": "Análisis Local", "site": "", "line": line_uci, "full_line": line_uci, "fens": hashes}
         self.db.add_to_clipbase(game_data); self.statusBar().showMessage("Partida guardada en Clipbase", 3000)
         if self.db.active_db_name == "Clipbase": self.db.set_active_db("Clipbase")
+
+    def paste_pgn_to_clipbase(self):
+        """Lee el portapapeles y añade las partidas PGN encontradas a la Clipbase"""
+        text = QApplication.clipboard().text()
+        if not text:
+            self.statusBar().showMessage("El portapapeles está vacío", 3000)
+            return
+
+        import chess.polyglot
+        pgn_io = io.StringIO(text)
+        games_added = 0
+        
+        while True:
+            try:
+                game = chess.pgn.read_game(pgn_io)
+                if game is None:
+                    break
+                
+                # Extraer datos básicos
+                headers = game.headers
+                white = headers.get("White", "Jugador Blanco")
+                black = headers.get("Black", "Jugador Negro")
+                result = headers.get("Result", "*")
+                date = headers.get("Date", "????.??.??")
+                event = headers.get("Event", "PGN Pegado")
+                site = headers.get("Site", "")
+                
+                # Obtener Elos
+                try: w_elo = int(headers.get("WhiteElo", 0))
+                except: w_elo = 0
+                try: b_elo = int(headers.get("BlackElo", 0))
+                except: b_elo = 0
+                
+                # Generar línea UCI y hashes FEN
+                board = game.board()
+                moves_uci = []
+                fens = [chess.polyglot.zobrist_hash(board)]
+                
+                for move in game.mainline_moves():
+                    moves_uci.append(move.uci())
+                    board.push(move)
+                    fens.append(chess.polyglot.zobrist_hash(board))
+                
+                full_line = " ".join(moves_uci)
+                # Línea corta para visualización rápida (primeros 12 movimientos)
+                short_line = " ".join(moves_uci[:12])
+                
+                game_data = {
+                    "id": int(time.time() * 1000) + games_added,
+                    "white": white,
+                    "black": black,
+                    "w_elo": w_elo,
+                    "b_elo": b_elo,
+                    "result": result,
+                    "date": date,
+                    "event": event,
+                    "site": site,
+                    "line": short_line,
+                    "full_line": full_line,
+                    "fens": fens
+                }
+                
+                self.db.add_to_clipbase(game_data)
+                games_added += 1
+            except Exception as e:
+                logger.error(f"Error parseando PGN desde portapapeles: {e}")
+                break
+
+        if games_added > 0:
+            self.statusBar().showMessage(f"Se han añadido {games_added} partidas a la Clipbase", 5000)
+            if self.db.active_db_name == "Clipbase":
+                self.refresh_db_list()
+            else:
+                # Opcional: preguntar si quiere cambiar a Clipbase
+                ret = QMessageBox.question(self, "Partidas Añadidas", 
+                                         f"Se han añadido {games_added} partidas a la Clipbase.\n¿Quieres ir a la Clipbase ahora?",
+                                         QMessageBox.Yes | QMessageBox.No)
+                if ret == QMessageBox.Yes:
+                    self.db_sidebar.list_widget.setCurrentRow(0)
+                    self.db.set_active_db("Clipbase")
+        else:
+            self.statusBar().showMessage("No se han encontrado partidas PGN válidas en el portapapeles", 3000)
 
     def delete_selected_game(self):
         row = self.db_table.currentRow()
@@ -841,6 +983,7 @@ class MainWindow(QMainWindow):
             if self.db.active_db_name == name: 
                 self.db.set_active_db("Clipbase") # Volver a la base por defecto
             
+            self.refresh_reference_combo()
             self.save_config()
             self.statusBar().showMessage(f"Base '{name}' quitada de la lista", 3000)
 
@@ -1033,26 +1176,53 @@ class MainWindow(QMainWindow):
             item = items[0]
             
         self.db_sidebar.list_widget.setCurrentItem(item)
+        self.refresh_reference_combo()
         self.save_config()
         return name
 
     def open_settings(self):
-        dialog = SettingsDialog(self.board_ana.color_light, self.board_ana.color_dark, self)
+        current_config = {
+            "color_light": self.board_ana.color_light,
+            "color_dark": self.board_ana.color_dark,
+            "perf_threshold": self.perf_threshold,
+            "engine_path": self.engine_path,
+            "engine_threads": self.engine_threads,
+            "engine_hash": self.engine_hash,
+            "engine_depth": self.engine_depth
+        }
+        
+        dialog = SettingsDialog(current_config, self)
         if dialog.exec_():
-            light, dark = dialog.get_colors()
+            new_cfg = dialog.get_config()
             
-            # 1. Actualizar tablero de análisis
-            self.board_ana.color_light = light
-            self.board_ana.color_dark = dark
+            # 1. Actualizar apariencia
+            self.board_ana.color_light = new_cfg["color_light"]
+            self.board_ana.color_dark = new_cfg["color_dark"]
             self.board_ana.update_board()
             
-            # 2. Actualizar tablero de ejercicios (si existe)
+            # 2. Actualizar umbral y motor
+            self.perf_threshold = new_cfg["perf_threshold"]
+            self.engine_path = new_cfg["engine_path"]
+            self.engine_threads = new_cfg["engine_threads"]
+            self.engine_hash = new_cfg["engine_hash"]
+            self.engine_depth = new_cfg["engine_depth"]
+            
+            # Sincronizar widgets
+            self.opening_tree.perf_threshold = self.perf_threshold
+            
+            # 3. Actualizar tablero de ejercicios (si existe)
             if hasattr(self, 'tab_puzzles'):
-                self.tab_puzzles.chess_board.color_light = light
-                self.tab_puzzles.chess_board.color_dark = dark
+                self.tab_puzzles.chess_board.color_light = self.board_ana.color_light
+                self.tab_puzzles.chess_board.color_dark = self.board_ana.color_dark
                 self.tab_puzzles.chess_board.update_board()
             
             self.save_config()
+            self.statusBar().showMessage("Configuración actualizada", 3000)
+            
+            # 4. Reiniciar el motor si está activo para aplicar cambios (Threads, Hash, etc.)
+            if hasattr(self, 'action_engine') and self.action_engine.isChecked():
+                self.toggle_engine(False) # Apaga el actual
+                self.toggle_engine(True)  # Arranca el nuevo con los nuevos parámetros
 
     def reset_filters(self):
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}; self.db.set_active_db(self.db.active_db_name)
@@ -1201,7 +1371,13 @@ class MainWindow(QMainWindow):
         colors = {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark}
         self.app_db.set_config("colors", colors)
         
-        # 3. Otros ajustes
+        # 3. Motor
+        self.app_db.set_config("engine_path", self.engine_path)
+        self.app_db.set_config("engine_threads", self.engine_threads)
+        self.app_db.set_config("engine_hash", self.engine_hash)
+        self.app_db.set_config("engine_depth", self.engine_depth)
+        
+        # 4. Otros ajustes
         self.app_db.set_config("perf_threshold", getattr(self, 'perf_threshold', 25))
 
     def load_config(self):
@@ -1215,6 +1391,12 @@ class MainWindow(QMainWindow):
         if colors:
             self.def_light = colors.get("light", self.def_light)
             self.def_dark = colors.get("dark", self.def_dark)
+            
+        # Cargar configuración del motor
+        self.engine_path = self.app_db.get_config("engine_path", "/usr/bin/stockfish")
+        self.engine_threads = self.app_db.get_config("engine_threads", 1)
+        self.engine_hash = self.app_db.get_config("engine_hash", 64)
+        self.engine_depth = self.app_db.get_config("engine_depth", 10)
             
         # Cargar bases de datos abiertas
         self.pending_dbs = self.app_db.get_config("open_dbs", [])

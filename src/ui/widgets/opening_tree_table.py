@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QStackedWidget)
+                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QStackedWidget, QComboBox)
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QColor, QFont
 import polars as pl
@@ -13,6 +13,7 @@ from src.core.utils import uci_to_san
 class OpeningTreeTable(QWidget):
     move_selected = Signal(str) # uci
     move_hovered = Signal(str)  # uci or None
+    reference_changed = Signal(str) # nombre de la base
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,6 +42,15 @@ class OpeningTreeTable(QWidget):
         self.label_global_stats.setToolTip("Haz clic para filtrar partidas")
         
         header_layout.addWidget(self.label_eco, 1)
+        
+        # Selector de Base de Referencia
+        self.combo_ref = QComboBox()
+        self.combo_ref.addItem("Base Activa")
+        self.combo_ref.setToolTip("Elegir base de datos para estadísticas")
+        self.combo_ref.setStyleSheet("QComboBox { font-size: 10px; padding: 2px; color: #555; }")
+        self.combo_ref.currentTextChanged.connect(self.reference_changed.emit)
+        header_layout.addWidget(self.combo_ref)
+
         header_layout.addWidget(self.label_global_stats)
         layout.addLayout(header_layout)
 
@@ -50,6 +60,11 @@ class OpeningTreeTable(QWidget):
         # Página 1: La Tabla
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Movim.", "Frec.", "Barra", "Win %", "AvElo", "Perf"])
+        
+        # Añadir tooltips a las cabeceras
+        self.table.horizontalHeaderItem(4).setToolTip("Elo medio de los jugadores que realizaron este movimiento")
+        self.table.horizontalHeaderItem(5).setToolTip("Rendimiento real (Performance). Se ilumina en verde si es muy superior al AvElo y en rojo si es inferior.")
+        
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)

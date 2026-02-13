@@ -175,6 +175,7 @@ class PuzzleSaveWorker(QThread):
 
 class StatsWorker(QThread):
     finished = Signal(object)
+    progress = Signal(int) # Porcentaje 0-100
 
     def __init__(self, db, current_line_uci, is_white_turn, current_hash=None, app_db=None):
         super().__init__()
@@ -201,10 +202,10 @@ class StatsWorker(QThread):
                 return
 
             # 2. Intentar obtener de la caché PERSISTENTE
-            db_path = self.db.db_metadata.get(self.db.active_db_name, {}).get("path")
-            is_full_base = self.db.current_filter_query is None
+            db_path = self.db.get_reference_path()
+            is_full_base = self.db.reference_db_name is not None or self.db.current_filter_query is None
             
-            if is_full_base and db_path and self.app_db:
+            if db_path and self.app_db:
                 persistent_cached = self.app_db.get_opening_stats(db_path, self.current_hash)
                 if persistent_cached is not None:
                     logger.info(f"StatsWorker: HIT Cache SQLite para {self.current_hash}")
@@ -213,7 +214,7 @@ class StatsWorker(QThread):
                     return
 
             # 3. Cálculo con Polars
-            lazy_view = self.db.get_current_view()
+            lazy_view = self.db.get_reference_view()
             if lazy_view is None:
                 self.finished.emit(None)
                 return
@@ -222,35 +223,51 @@ class StatsWorker(QThread):
             start = time.time()
             target = int(self.current_hash)
             
-            # ... (Expresión Polars) ...
-            q = (
-                lazy_view
-                .filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64)))
-                .with_columns([
-                    pl.col("full_line").str.split(" ").alias("_m"),
-                    pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")
-                ])
-                .filter(pl.col("_i") < pl.col("_m").list.len())
-                .with_columns(
-                    pl.col("_m").list.get(pl.col("_i")).alias("uci")
-                )
-                .filter(
-                    (pl.col("uci").str.len_chars() >= 4) & 
-                    (pl.col("uci").str.len_chars() <= 5)
-                )
-                .group_by("uci")
-                .agg([
-                    pl.len().alias("c"),
-                    (pl.col("result") == "1-0").sum().alias("w"),
-                    (pl.col("result") == "1/2-1/2").sum().alias("d"),
-                    (pl.col("result") == "0-1").sum().alias("b"),
-                    pl.col("w_elo").mean().fill_null(0).alias("avg_w_elo"),
-                    pl.col("b_elo").mean().fill_null(0).alias("avg_b_elo")
-                ])
-                .sort("c", descending=True)
-            )
+            # 1. Obtener el conteo total para dividir el trabajo
+            total_count = lazy_view.select(pl.len()).collect().item()
             
-            stats = q.collect(streaming=True)
+            # Si la base es pequeña (< 200k), lo hacemos de un tirón para no perder rendimiento
+            if total_count < 200000:
+                q = self._build_stats_query(lazy_view, target)
+                stats = q.collect(streaming=True)
+                self.progress.emit(100)
+            else:
+                # Para bases grandes, dividimos en 10 bloques para dar feedback de progreso
+                num_chunks = 10
+                chunk_size = total_count // num_chunks
+                all_chunks = []
+                
+                for i in range(num_chunks):
+                    if self.isInterruptionRequested(): return
+                    
+                    offset = i * chunk_size
+                    # El último bloque toma el resto
+                    length = chunk_size if i < num_chunks - 1 else total_count - offset
+                    
+                    chunk_lazy = lazy_view.slice(offset, length)
+                    q = self._build_stats_query(chunk_lazy, target)
+                    chunk_res = q.collect(streaming=True)
+                    all_chunks.append(chunk_res)
+                    
+                    self.progress.emit(int(((i + 1) / num_chunks) * 100))
+                
+                # Combinar resultados de los bloques
+                combined = pl.concat(all_chunks)
+                # Volver a agrupar porque el mismo movimiento UCI puede estar en varios bloques
+                stats = (
+                    combined.group_by("uci")
+                    .agg([
+                        pl.col("c").sum(),
+                        pl.col("w").sum(),
+                        pl.col("d").sum(),
+                        pl.col("b").sum(),
+                        # Promedio ponderado para los Elos
+                        ((pl.col("avg_w_elo") * pl.col("c")).sum() / pl.col("c").sum()).alias("avg_w_elo"),
+                        ((pl.col("avg_b_elo") * pl.col("c")).sum() / pl.col("c").sum()).alias("avg_b_elo")
+                    ])
+                    .sort("c", descending=True)
+                )
+
             stats = stats.with_columns(pl.lit(False).alias("_is_partial"))
             elapsed = time.time() - start
             logger.debug(f"StatsWorker: Cálculo finalizado en {elapsed:.2f}s")
@@ -268,6 +285,34 @@ class StatsWorker(QThread):
         except Exception as e:
             print(f"Error en StatsWorker: {e}")
             self.finished.emit(None)
+
+    def _build_stats_query(self, lazy_df, target):
+        """Helper para construir la consulta base de estadísticas"""
+        return (
+            lazy_df
+            .filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64)))
+            .with_columns([
+                pl.col("full_line").str.split(" ").alias("_m"),
+                pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")
+            ])
+            .filter(pl.col("_i") < pl.col("_m").list.len())
+            .with_columns(
+                pl.col("_m").list.get(pl.col("_i")).alias("uci")
+            )
+            .filter(
+                (pl.col("uci").str.len_chars() >= 4) & 
+                (pl.col("uci").str.len_chars() <= 5)
+            )
+            .group_by("uci")
+            .agg([
+                pl.len().alias("c"),
+                (pl.col("result") == "1-0").sum().alias("w"),
+                (pl.col("result") == "1/2-1/2").sum().alias("d"),
+                (pl.col("result") == "0-1").sum().alias("b"),
+                pl.col("w_elo").mean().fill_null(0).alias("avg_w_elo"),
+                pl.col("b_elo").mean().fill_null(0).alias("avg_b_elo")
+            ])
+        )
 
 class PGNExportWorker(QThread):
     progress = Signal(int)
