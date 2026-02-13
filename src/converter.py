@@ -77,10 +77,15 @@ def count_games_fast(pgn_path):
             if line.startswith(b"[Event "): count += 1
     return count
 
-def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_size=5000, progress_callback=None, workers=None):
+def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_size=1000, progress_callback=None, workers=None):
     start_time = time.time()
-    num_workers = workers if workers else os.cpu_count()
     
+    # --- Lógica Condicional de Paralelismo ---
+    # Por defecto (workers=None) o si es 1, se ejecuta secuencialmente para máxima estabilidad (GUI).
+    # Si se especifican workers > 1, se activa el modo paralelo (CLI).
+    use_parallel = workers is not None and workers > 1
+    num_workers = workers if use_parallel else 1
+
     # 1. Preparación de entorno temporal
     total_games_file = count_games_fast(pgn_path)
     total_to_process = min(total_games_file, max_games)
@@ -107,7 +112,7 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_siz
         if lines and game_count < total_to_process:
             chunks_args.append(("".join(lines), (game_count // chunk_size) * chunk_size, temp_work_dir, chunk_index))
 
-    # 3. Procesamiento Paralelo
+    # 3. Procesamiento (Paralelo o Secuencial)
     parquet_files = []
     processed_count = 0
 
@@ -120,21 +125,34 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_siz
         TimeElapsedColumn(),
     ) as progress:
         
-        task = progress.add_task(f"Analizando en {num_workers} hilos...", total=total_to_process, speed="0")
+        task_description = f"Analizando en {num_workers} {'hilos' if use_parallel else 'hilo'}..."
+        task = progress.add_task(task_description, total=total_to_process, speed="0")
         
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            for chunk_path in executor.map(process_pgn_chunk_to_parquet, chunks_args):
-                if chunk_path:
-                    parquet_files.append(chunk_path)
-                    processed_count += chunk_size # Aproximado para la barra
-                    if processed_count > total_to_process: processed_count = total_to_process
-                    
-                    elapsed = time.time() - start_time
-                    speed = f"{processed_count / elapsed:.0f}" if elapsed > 0 else "0"
-                    
-                    progress.update(task, completed=processed_count, speed=speed)
-                    if progress_callback:
-                        progress_callback(int((processed_count / total_to_process) * 100))
+        def update_progress(chunk_path):
+            nonlocal processed_count
+            if chunk_path:
+                parquet_files.append(chunk_path)
+                # La estimación de progreso es aproximada, basada en el tamaño del chunk
+                processed_count += chunk_size
+                if processed_count > total_to_process: processed_count = total_to_process
+                
+                elapsed = time.time() - start_time
+                speed = f"{processed_count / elapsed:.0f}" if elapsed > 0 else "0"
+                
+                progress.update(task, completed=processed_count, speed=speed)
+                if progress_callback:
+                    # Asegurarse que el progreso no excede 100
+                    percent = min(100, int((processed_count / total_to_process) * 100))
+                    progress_callback(percent)
+
+        if use_parallel:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                for result_path in executor.map(process_pgn_chunk_to_parquet, chunks_args):
+                    update_progress(result_path)
+        else:
+            for args in chunks_args:
+                result_path = process_pgn_chunk_to_parquet(args)
+                update_progress(result_path)
 
     # 4. Fusión Final con Polars Streaming (La clave para la RAM)
     if parquet_files:

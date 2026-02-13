@@ -415,123 +415,126 @@ class MainWindow(QMainWindow):
         else: 
             self.statusBar().showMessage("Listo", 2000)
 
-    def init_menu(self):
-        menubar = self.menuBar()
-        
-        # --- MENÚ ARCHIVO ---
+    def _create_action(self, text, icon_name, shortcut="", slot=None, tip="", color=None, is_checkable=False):
+        """Helper factory para crear una QAction."""
+        icon = qta.icon(icon_name, color=color) if icon_name else None
+        action = QAction(icon, text, self)
+        if shortcut:
+            action.setShortcut(QKeySequence.fromString(shortcut))
+        if slot:
+            action.triggered.connect(slot)
+        if tip:
+            action.setStatusTip(tip)
+        if is_checkable:
+            action.setCheckable(True)
+        return action
+
+    def _create_file_menu(self, menubar):
         file_menu = menubar.addMenu("&Archivo")
         
-        # Abrir
-        open_parquet = QAction(qta.icon('fa5s.folder-open', color='#1976d2'), "&Abrir Base Parquet...", self)
-        open_parquet.setShortcut("Ctrl+O")
-        open_parquet.triggered.connect(self.open_parquet_file)
-        file_menu.addAction(open_parquet)
+        file_menu.addAction(self._create_action(
+            "&Nueva Base Vacía...", 'fa5s.plus-circle', "Ctrl+N", self.create_new_db,
+            "Crear una nueva base de datos Parquet vacía"
+        ))
+        file_menu.addAction(self._create_action(
+            "&Abrir Base de Datos...", 'fa5s.folder-open', "Ctrl+O", self.open_parquet_file,
+            "Abrir una base de datos Parquet existente", color='#1976d2'
+        ))
         
-        # Importar
-        import_menu = file_menu.addMenu(qta.icon('fa5s.file-import'), "&Importar")
-        import_pgn = QAction(qta.icon('fa5s.file-code', color='#2e7d32'), "Archivo &PGN...", self)
-        import_pgn.setShortcut("Ctrl+I")
-        import_pgn.triggered.connect(self.import_pgn)
-        import_menu.addAction(import_pgn)
-        
-        # Exportar
-        export_menu = file_menu.addMenu(qta.icon('fa5s.file-export'), "&Exportar")
-        export_full_pgn = QAction(qta.icon('fa5s.file-export'), "Base Activa a &PGN...", self)
-        export_full_pgn.triggered.connect(self.export_full_db_to_pgn)
-        export_menu.addAction(export_full_pgn)
-        
-        export_filtered_pgn = QAction(qta.icon('fa5s.filter'), "Filtro a P&GN...", self)
-        export_filtered_pgn.setShortcut("Ctrl+E")
-        export_filtered_pgn.triggered.connect(self.export_filter_to_pgn)
-        export_menu.addAction(export_filtered_pgn)
-        
-        file_menu.addSeparator()
-        
-        # --- ACCIÓN GUARDAR (PERSISTIR) ---
-        self.save_action = QAction(qta.icon('fa5s.save', color='#1976d2'), "&Guardar Base (Persistir)", self)
-        self.save_action.setShortcut("Ctrl+S")
-        self.save_action.triggered.connect(self.save_to_active_db)
+        self.save_action = self._create_action(
+            "&Guardar Base Activa", 'fa5s.save', "Ctrl+S", self.save_to_active_db,
+            "Persistir los cambios de la base activa en el disco", color='#1976d2'
+        )
         file_menu.addAction(self.save_action)
-        
-        file_menu.addSeparator()
-        settings_action = QAction(qta.icon('fa5s.cog'), "&Configuración...", self)
-        settings_action.triggered.connect(self.open_settings)
-        file_menu.addAction(settings_action)
-        
-        file_menu.addSeparator()
-        exit_action = QAction(qta.icon('fa5s.power-off'), "&Salir", self); exit_action.setShortcut("Ctrl+Q"); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
 
-        # --- MENÚ EDITAR (Después de Archivo) ---
-        edit_menu = menubar.addMenu("&Editar")
-        invert_action = QAction(qta.icon('fa5s.exchange-alt'), "&Invertir Filtro", self)
-        invert_action.triggered.connect(self.trigger_invert_filter)
-        edit_menu.addAction(invert_action)
-        
-        clear_action = QAction(qta.icon('fa5s.eraser', color='#c62828'), "&Quitar Filtros", self)
-        clear_action.setShortcut("Ctrl+L"); clear_action.triggered.connect(self.reset_filters); edit_menu.addAction(clear_action)
-        
-        edit_menu.addSeparator()
-        delete_filtered_action = QAction(qta.icon('fa5s.trash-alt', color='#c62828'), "&Borrar Partidas Filtradas", self)
-        delete_filtered_action.triggered.connect(self.delete_filtered_games_ui)
-        edit_menu.addAction(delete_filtered_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._create_action(
+            "&Configuración...", 'fa5s.cog', slot=self.open_settings
+        ))
+        file_menu.addSeparator()
+        file_menu.addAction(self._create_action(
+            "&Salir", 'fa5s.power-off', "Ctrl+Q", self.close
+        ))
 
-        # --- MENÚ JUGADOR ---
+    def _create_database_menu(self, menubar):
+        db_menu = menubar.addMenu("&Base de Datos")
+
+        import_menu = db_menu.addMenu(qta.icon('fa5s.file-import'), "&Importar / Añadir")
+        import_menu.addAction(self._create_action(
+            "PGN a Nueva Base...", 'fa5s.file-code', "Ctrl+I", self.import_pgn,
+            tip="Importar un archivo PGN a una nueva base Parquet", color='#2e7d32'
+        ))
+        import_menu.addAction(self._create_action(
+            "Añadir PGN a Base Activa...", 'fa5s.file-medical', slot=self.append_pgn_to_current_db,
+            tip="Añadir partidas de un PGN a la base de datos activa", color='#2e7d32'
+        ))
+
+        export_menu = db_menu.addMenu(qta.icon('fa5s.file-export'), "&Exportar")
+        export_menu.addAction(self._create_action(
+            "Base Activa a PGN...", 'fa5s.file-export', slot=self.export_full_db_to_pgn
+        ))
+        export_menu.addAction(self._create_action(
+            "Filtro a PGN...", 'fa5s.filter', "Ctrl+E", self.export_filter_to_pgn
+        ))
+        export_menu.addAction(self._create_action(
+            "Filtro a Parquet...", 'fa5s.file-download', slot=self.export_filter_to_parquet
+        ))
+        
+        db_menu.addSeparator()
+        
+        db_menu.addAction(self._create_action(
+            "&Filtrar Partidas...", 'fa5s.search', "Ctrl+F", self.open_search
+        ))
+        db_menu.addAction(self._create_action(
+            "&Invertir Filtro", 'fa5s.exchange-alt', slot=self.trigger_invert_filter
+        ))
+        db_menu.addAction(self._create_action(
+            "&Quitar Filtros", 'fa5s.eraser', "Ctrl+L", self.reset_filters, color='#c62828'
+        ))
+        
+        db_menu.addSeparator()
+        
+        db_menu.addAction(self._create_action(
+            "&Borrar Partidas Filtradas", 'fa5s.trash-alt', slot=self.delete_filtered_games_ui, color='#c62828'
+        ))
+        db_menu.addAction(self._create_action(
+            "&Eliminar Archivo de Base...", 'fa5s.dumpster-fire', slot=self.delete_current_db_file, color='#c62828'
+        ))
+
+    def _create_player_menu(self, menubar):
         player_menu = menubar.addMenu("&Jugador")
-        report_action = QAction(qta.icon('fa5s.chart-bar', color='#673ab7'), "Dossier de &Inteligencia...", self)
-        report_action.setShortcut("Ctrl+D"); report_action.triggered.connect(self.prompt_player_report); player_menu.addAction(report_action)
+        player_menu.addAction(self._create_action(
+            "Dossier de &Inteligencia...", 'fa5s.chart-bar', "Ctrl+D", self.prompt_player_report,
+            tip="Generar un informe de rendimiento para un jugador", color='#673ab7'
+        ))
 
-        # --- MENÚ BASES DE DATOS ---
-        db_menu = menubar.addMenu("&Bases de Datos")
-        
-        # Submenú Crear
-        create_menu = db_menu.addMenu(qta.icon('fa5s.plus-circle'), "&Crear")
-        
-        new_empty_db = QAction("Base &Vacía...", self)
-        new_empty_db.setShortcut("Ctrl+N")
-        new_empty_db.triggered.connect(self.create_new_db)
-        create_menu.addAction(new_empty_db)
-        
-        new_from_filter = QAction("Desde Filas &Filtradas (Parquet)...", self)
-        new_from_filter.triggered.connect(self.export_filter_to_parquet)
-        create_menu.addAction(new_from_filter)
-        
-        append_pgn_action = QAction(qta.icon('fa5s.file-medical', color='#2e7d32'), "&Añadir PGN a la base activa...", self)
-        append_pgn_action.triggered.connect(self.append_pgn_to_current_db)
-        db_menu.addAction(append_pgn_action)
-        
-        db_menu.addSeparator()
-        filter_action = QAction(qta.icon('fa5s.search'), "&Filtrar Partidas...", self)
-        filter_action.setShortcut("Ctrl+F"); filter_action.triggered.connect(self.open_search); db_menu.addAction(filter_action)
-        
-        db_menu.addSeparator()
-        delete_db_action = QAction(qta.icon('fa5s.trash-alt'), "&Eliminar Archivo de Base...", self)
-        delete_db_action.triggered.connect(self.delete_current_db_file); db_menu.addAction(delete_db_action)
-
-        # --- MENÚ TABLERO ---
+    def _create_board_menu(self, menubar):
         board_menu = menubar.addMenu("&Tablero")
+        board_menu.addAction(self._create_action(
+            "&Girar Tablero", 'fa5s.retweet', "F", self.flip_boards
+        ))
         
-        flip_action = QAction(qta.icon('fa5s.retweet'), "&Girar Tablero", self)
-        flip_action.setShortcut("F")
-        flip_action.triggered.connect(self.flip_boards)
-        board_menu.addAction(flip_action)
-        
-        engine_action = QAction(qta.icon('fa5s.microchip'), "&Activar Motor", self)
-        engine_action.setShortcut("E")
-        engine_action.setCheckable(True)
-        engine_action.triggered.connect(self.toggle_engine_shortcut)
-        board_menu.addAction(engine_action)
+        # Esta acción se define en setup_toolbar, aquí solo la reutilizamos/sincronizamos
+        board_menu.addAction(self.action_engine)
         
         board_menu.addSeparator()
-        
-        analyze_action = QAction(qta.icon('fa5s.magic', color='#673ab7'), "&Analizar Partida Completa", self)
-        analyze_action.triggered.connect(self.start_full_analysis)
-        board_menu.addAction(analyze_action)
-        
-        # --- MENÚ AYUDA ---
+        board_menu.addAction(self._create_action(
+            "&Analizar Partida Completa", 'fa5s.magic', slot=self.start_full_analysis, color='#673ab7'
+        ))
+
+    def _create_help_menu(self, menubar):
         help_menu = menubar.addMenu("&Ayuda")
-        about_action = QAction(qta.icon('fa5s.info-circle'), "&Acerca de...", self)
-        about_action.triggered.connect(self.show_about_dialog)
-        help_menu.addAction(about_action)
+        help_menu.addAction(self._create_action(
+            "&Acerca de...", 'fa5s.info-circle', slot=self.show_about_dialog
+        ))
+
+    def init_menu(self):
+        menubar = self.menuBar()
+        self._create_file_menu(menubar)
+        self._create_database_menu(menubar)
+        self._create_player_menu(menubar)
+        self._create_board_menu(menubar)
+        self._create_help_menu(menubar)
 
     def show_about_dialog(self):
         about_text = "<h3>fa-chess</h3><p><b>Versión:</b> 1.0.0</p><p><b>Autor:</b> Fabio Rueda</p><hr><p>Un clon moderno y ligero de Scid vs. PC enfocado en el rendimiento masivo.</p><p><b>Tecnologías clave:</b><ul><li>Python & PySide6 (Qt)</li><li>Polars 1.x (Motor de datos ultra-rápido)</li><li>Python-Chess (Lógica de juego)</li></ul></p><p>© 2026 Fabio Rueda</p>"
@@ -732,6 +735,11 @@ class MainWindow(QMainWindow):
     def close_tab(self, index):
         # Impedir cerrar las dos pestañas principales (Tablero y Gestor)
         if index > 1:
+            # Primero cerramos la base de datos si es una base abierta en una pestaña
+            widget = self.tabs.widget(index)
+            if isinstance(widget, PlayerReportWidget): # Asumiendo que es el único tipo de pestaña dinámica
+                db_name_to_close = widget.property("db_name") # Necesitaríamos guardar esto
+                # self.db.close_db(db_name_to_close) # Necesitaríamos una función así
             self.tabs.removeTab(index)
 
     def show_player_report(self, player_name):
@@ -768,16 +776,13 @@ class MainWindow(QMainWindow):
 
     def toggle_db_readonly_logic(self, item):
         if not item: return
-        name = item.text()
+        name = item.text().replace("*", "").strip()
         if name == "Clipbase": return
         
-        # Obtener estado actual y hacer toggle
         current_ro = self.db.db_metadata.get(name, {}).get("read_only", True)
         new_status = not current_ro
         
-        # Aplicar cambio en el motor
         if self.db.set_readonly(name, new_status):
-            # Cambiar visualmente
             if new_status: 
                 item.setIcon(qta.icon('fa5s.lock', color='#888888'))
                 item.setForeground(QColor("#888888"))
@@ -788,22 +793,23 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Base '{name}': {'Solo Lectura' if new_status else 'Edición Habilitada'}", 3000)
             self.refresh_db_list()
 
-    def toggle_db_readonly(self, item, status):
-        # Mantenemos este método por compatibilidad con el menú contextual antiguo
-        self.toggle_db_readonly_logic(item, status)
-
     def on_db_list_context_menu(self, pos):
         item = self.db_sidebar.list_widget.itemAt(pos)
         if not item or item.text() == "Clipbase": return
-        name = item.text(); is_readonly = self.db.db_metadata.get(name, {}).get("read_only", True); menu = QMenu()
+        name = item.text().replace("*", "").strip()
+        is_readonly = self.db.db_metadata.get(name, {}).get("read_only", True)
+        menu = QMenu()
         
         if not is_readonly: 
-            # Solo ofrecemos persistir si ya está en modo escritura
             persist_action = QAction(qta.icon('fa5s.save', color='#1976d2'), " Persistir Base (Guardar en Disco)", self)
             persist_action.triggered.connect(self.save_to_active_db)
             menu.addAction(persist_action)
 
-        menu.addSeparator(); remove_action = QAction(qta.icon('fa5s.times', color='red'), " Quitar de la lista", self); remove_action.triggered.connect(lambda: self.remove_database(item)); menu.addAction(remove_action); menu.exec(self.db_sidebar.list_widget.mapToGlobal(pos))
+        menu.addSeparator()
+        remove_action = QAction(qta.icon('fa5s.times', color='red'), " Quitar de la lista", self)
+        remove_action.triggered.connect(lambda: self.remove_database(item))
+        menu.addAction(remove_action)
+        menu.exec(self.db_sidebar.list_widget.mapToGlobal(pos))
 
     def switch_database_with_feedback(self, name):
         """Cambia la base de datos activa mostrando una barra de progreso"""
@@ -823,12 +829,18 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     def remove_database(self, item):
-        name = item.text()
+        if not item: return
+        name = item.text().replace("*", "").strip()
         if name in self.db.dbs:
             del self.db.dbs[name]
             if name in self.db.db_metadata: del self.db.db_metadata[name]
+            
+            # Quitar de la lista visual
             self.db_sidebar.list_widget.takeItem(self.db_sidebar.list_widget.row(item))
-            if self.db.active_db_name == name: self.db.set_active_db("Clipbase")
+            
+            if self.db.active_db_name == name: 
+                self.db.set_active_db("Clipbase") # Volver a la base por defecto
+            
             self.save_config()
             self.statusBar().showMessage(f"Base '{name}' quitada de la lista", 3000)
 

@@ -4,6 +4,10 @@ __depends__ = {}
 
 steps = [
     step(
+        "CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT)",
+        "DROP TABLE app_config"
+    ),
+    step(
         "CREATE TABLE IF NOT EXISTS puzzle_stats (puzzle_id TEXT PRIMARY KEY, status TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)",
         "DROP TABLE puzzle_stats"
     ),
