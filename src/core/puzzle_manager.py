@@ -10,22 +10,24 @@ class PuzzleManager:
 
     def apply_filters(self, min_rating=0, max_rating=4000, theme=None, opening=None):
         """Aplica filtros al LazyFrame"""
-        # Empezamos siempre desde la base completa
         q = self.lf
         
-        # Filtro de ELO obligatorio
+        # Filtro de ELO
         q = q.filter(
             (pl.col("Rating") >= int(min_rating)) & 
             (pl.col("Rating") <= int(max_rating))
         )
         
-        # Filtro de Temas opcional
-        if theme and len(theme) > 1:
-            q = q.filter(pl.col("Themes").str.contains(theme.lower()))
+        # Filtro de Temas (Lógica AND estricta, Insensible a mayúsculas)
+        if theme and len(theme.strip()) > 1:
+            words = theme.split()
+            for word in words:
+                if len(word) > 1:
+                    # Usamos (?i) al principio del patrón para ignorar mayúsculas en Polars
+                    q = q.filter(pl.col("Themes").str.contains(f"(?i){word}"))
         
-        # Filtro de Apertura opcional
-        if opening and len(opening) > 1:
-            q = q.filter(pl.col("OpeningTags").str.contains(opening))
+        # Ordenación por ELO ascendente por defecto
+        q = q.sort("Rating", descending=False)
             
         self.current_view = q
         return self
@@ -43,18 +45,13 @@ class PuzzleManager:
         return self.prepare_puzzle_data(row)
 
     def prepare_puzzle_data(self, row):
-        """Aplica las reglas de Lichess al FEN y movimientos"""
+        """Devuelve los datos necesarios para iniciar el puzzle con historial"""
         moves = row["Moves"].split()
-        board = chess.Board(row["FEN"])
-        
-        # El oponente hace el primer movimiento
-        first_move = chess.Move.from_uci(moves[0])
-        board.push(first_move)
-        
         return {
             "id": row["PuzzleId"],
-            "start_fen": board.fen(),
-            "solution": moves[1:], # Lista de jugadas UCI
+            "initial_fen": row["FEN"], # FEN antes del movimiento del oponente
+            "opponent_move": moves[0], # El movimiento que el oponente hace para plantear el reto
+            "solution": moves[1:],     # Lista de jugadas UCI de la solución
             "rating": row["Rating"],
             "themes": row["Themes"],
             "opening": row["OpeningTags"]

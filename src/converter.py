@@ -150,29 +150,34 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_siz
     print(f"\n¡Éxito! Procesadas {final_count} partidas en {end_time - start_time:.1f}s.")
     print(f"Velocidad media: {final_count/(end_time - start_time):.0f} partidas/s")
 
+from src.config import GAME_SCHEMA, logger
+
 def convert_lichess_puzzles(csv_path, output_path):
     """
     Convierte los 5.7M de puzzles de Lichess a Parquet conservando toda la metadata.
     """
-    print(f"Leyendo CSV masivo: {csv_path}...")
+    logger.info(f"Conversor: Leyendo CSV masivo de Lichess: {csv_path}")
     start_time = time.time()
     
-    # Usamos scan para procesar de forma eficiente
-    # PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags
-    df = pl.scan_csv(csv_path).select([
-        pl.col("PuzzleId"),
-        pl.col("FEN"),
-        pl.col("Moves"),
-        pl.col("Rating").cast(pl.Int32),
-        pl.col("Popularity").cast(pl.Int16),
-        pl.col("Themes"),
-        pl.col("OpeningTags").fill_null("")
-    ])
+    try:
+        # Usamos scan para procesar de forma eficiente
+        df = pl.scan_csv(csv_path).select([
+            pl.col("PuzzleId"),
+            pl.col("FEN"),
+            pl.col("Moves"),
+            pl.col("Rating").cast(pl.Int32),
+            pl.col("Popularity").cast(pl.Int16),
+            pl.col("Themes"),
+            pl.col("OpeningTags").fill_null("")
+        ])
 
-    print("Escribiendo archivo Parquet de alta velocidad...")
-    df.collect(streaming=True).write_parquet(output_path)
-    
-    print(f"¡Éxito! {output_path} generado en {time.time() - start_time:.1f}s")
+        logger.info("Conversor: Escribiendo archivo Parquet de alta velocidad (Streaming)...")
+        df.collect(streaming=True).write_parquet(output_path)
+        
+        logger.info(f"Conversor: Éxito! {output_path} generado en {time.time() - start_time:.1f}s")
+    except Exception as e:
+        logger.error(f"Conversor: Fallo crítico en la conversión: {e}")
+        raise e
 
 if __name__ == "__main__":
     import sys

@@ -76,10 +76,18 @@ STYLE_ACTION_BUTTON = """
         font-size: 11px;
     }
     QPushButton:hover {
-        background-color: #e9ecef;
+        background-color: #f1f3f5;
         border-color: #adb5bd;
     }
     QPushButton:pressed {
-        background-color: #dee2e6;
+        background-color: #e9ecef;
+        padding-top: 7px;     /* Efecto de hundimiento */
+        padding-left: 13px;
+        border-style: inset;
+    }
+    QPushButton:checked {
+        background-color: #e7f5ff;
+        border-color: #339af0;
+        color: #1971c2;
     }
 """

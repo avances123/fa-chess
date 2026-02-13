@@ -14,10 +14,11 @@ from PySide6.QtCore import Qt, QPointF, QTimer, QSize
 from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QColor, QBrush
 import qtawesome as qta
 
-from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE
-from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker, PGNAppendWorker
+from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE, APP_DB_FILE
+from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker, PGNAppendWorker, PuzzleGeneratorWorker
 from src.core.eco import ECOManager
 from src.core.db_manager import DBManager
+from src.core.app_db import AppDBManager
 from src.core.game_controller import GameController
 from src.ui.board import ChessBoard
 from src.ui.settings_dialog import SettingsDialog
@@ -43,6 +44,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("fa-chess")
         self.setStyleSheet(LIGHT_STYLE)
         
+        # Gestor de Base de Datos de la App (SQLite)
+        self.app_db = AppDBManager(APP_DB_FILE)
+        
         # Gestores y Controladores
         self.db = DBManager()
         self.game = GameController()
@@ -54,6 +58,11 @@ class MainWindow(QMainWindow):
         self.col_mapping = {0: "id", 1: "date", 2: "white", 3: "w_elo", 4: "black", 5: "b_elo", 6: "result"}
         
         self.game_evals = [] # Almacenar evaluaciones de la partida actual
+        
+        # Paginación para la tabla de bases
+        self.db_batch_size = 100
+        self.db_loaded_count = 0
+        self.current_db_df = None
         
         # Conectar señales del controlador de juego
         self.game.position_changed.connect(self.update_ui)
@@ -237,6 +246,10 @@ class MainWindow(QMainWindow):
         self.db_table = self.create_scid_table(["ID", "Fecha", "Blancas", "Elo B", "Negras", "Elo N", "Res"])
         self.db_table.itemDoubleClicked.connect(self.load_game_from_list)
         self.db_table.customContextMenuRequested.connect(self.on_db_table_context_menu)
+        
+        # CONECTAR SCROLL INFINITO
+        self.db_table.verticalScrollBar().valueChanged.connect(self.on_db_scroll)
+        
         db_content.addWidget(self.db_table); db_layout.addLayout(db_content, 4)
         
         # --- TAB 3: EJERCICIOS (Lichess DB) ---
@@ -374,7 +387,7 @@ class MainWindow(QMainWindow):
         self.opening_tree.set_loading(True)
         self.progress.setRange(0, 0); self.progress.show(); self.statusBar().showMessage("Calculando estadísticas...")
         
-        self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash)
+        self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash, app_db=self.app_db)
         self.stats_worker.finished.connect(self.on_stats_finished); self.stats_worker.start()
 
     def update_stats(self):
@@ -1013,7 +1026,21 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         dialog = SettingsDialog(self.board_ana.color_light, self.board_ana.color_dark, self)
-        if dialog.exec_(): light, dark = dialog.get_colors(); self.board_ana.color_light = light; self.board_ana.color_dark = dark; self.board_ana.update_board(); self.save_config()
+        if dialog.exec_():
+            light, dark = dialog.get_colors()
+            
+            # 1. Actualizar tablero de análisis
+            self.board_ana.color_light = light
+            self.board_ana.color_dark = dark
+            self.board_ana.update_board()
+            
+            # 2. Actualizar tablero de ejercicios (si existe)
+            if hasattr(self, 'tab_puzzles'):
+                self.tab_puzzles.chess_board.color_light = light
+                self.tab_puzzles.chess_board.color_dark = dark
+                self.tab_puzzles.chess_board.update_board()
+            
+            self.save_config()
 
     def reset_filters(self):
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}; self.db.set_active_db(self.db.active_db_name)
@@ -1069,33 +1096,28 @@ class MainWindow(QMainWindow):
         lazy_active = self.db.dbs.get(self.db.active_db_name)
         if lazy_active is None: return
         
-        # --- ACTUALIZAR INDICADORES "DIRTY" EN EL SIDEBAR ---
+        # --- ACTUALIZAR INDICADORES "DIRTY" ---
         for i in range(self.db_sidebar.list_widget.count()):
             it = self.db_sidebar.list_widget.item(i)
             db_name = it.data(Qt.UserRole + 1) or it.text().replace("*", "").strip()
-            
-            # Guardamos el nombre original sin asterisco en un rol oculto si no está
-            if not it.data(Qt.UserRole + 1):
-                it.setData(Qt.UserRole + 1, db_name)
+            if not it.data(Qt.UserRole + 1): it.setData(Qt.UserRole + 1, db_name)
             
             is_dirty = self.db.is_dirty(db_name)
             if is_dirty:
                 it.setText(f"{db_name} *")
                 if not self.db.db_metadata.get(db_name, {}).get("read_only", True):
-                    it.setForeground(QColor("#1976d2")) # Azul si es dirty y RW
+                    it.setForeground(QColor("#1976d2"))
             else:
                 it.setText(db_name)
-                # Restaurar color según RO/RW
-                if self.db.db_metadata.get(db_name, {}).get("read_only", True):
-                    it.setForeground(QColor("#888888"))
-                else:
-                    it.setForeground(QColor("#000000"))
+                if self.db.db_metadata.get(db_name, {}).get("read_only", True): it.setForeground(QColor("#888888"))
+                else: it.setForeground(QColor("#000000"))
 
         # Actualizar estado del botón Guardar
         is_readonly = self.db.db_metadata.get(self.db.active_db_name, {}).get("read_only", True)
         can_save = (not is_readonly) or (self.db.active_db_name == "Clipbase")
         self.btn_save.setEnabled(can_save)
 
+        # Determinar DataFrame de origen
         total_db = self.db.get_active_count()
         is_filtered = self.db.current_filter_df is not None
         is_inverted = getattr(self, '_just_inverted', False)
@@ -1113,56 +1135,78 @@ class MainWindow(QMainWindow):
             df = self.db.get_active_df()
 
         # ACTUALIZACIÓN SINCRONIZADA DEL BADGE GLOBAL
-        f_count = format_qty(count)
-        f_total = format_qty(total_db)
+        f_count = format_qty(count); f_total = format_qty(total_db)
         self.opening_tree.label_global_stats.setText(f"{f_count} / {f_total}")
         self.opening_tree.label_global_stats.setStyleSheet(STYLE_BADGE_ERROR if state == "error" else (STYLE_BADGE_SUCCESS if is_filtered else STYLE_BADGE_NORMAL))
-        
-        # También actualizamos el sidebar para mantener coherencia total
         self.db_sidebar.update_stats(f_count, f_total, state)
         
         if df is None: return
-        disp = df.head(1000); self.db_table.setRowCount(disp.height)
-        for i, r in enumerate(disp.rows(named=True)):
-            self.db_table.setItem(i, 0, QTableWidgetItem(str(r["id"]))); self.db_table.setItem(i, 1, QTableWidgetItem(r["date"])); self.db_table.setItem(i, 2, QTableWidgetItem(r["white"])); self.db_table.setItem(i, 3, QTableWidgetItem(str(r["w_elo"]))); self.db_table.setItem(i, 4, QTableWidgetItem(r["black"])); self.db_table.setItem(i, 5, QTableWidgetItem(str(r["b_elo"]))); self.db_table.setItem(i, 6, QTableWidgetItem(r["result"])); self.db_table.item(i, 0).setData(Qt.UserRole, r["id"])
+        
+        # --- RESETEAR SCROLL INFINITO ---
+        self.current_db_df = df
+        self.db_loaded_count = 0
+        self.db_table.setRowCount(0)
+        self.load_more_db_rows()
+
+    def on_db_scroll(self, value):
+        scrollbar = self.db_table.verticalScrollBar()
+        if value > scrollbar.maximum() - 20:
+            self.load_more_db_rows()
+
+    def load_more_db_rows(self):
+        if self.current_db_df is None: return
+        
+        start = self.db_loaded_count
+        end = min(start + self.db_batch_size, self.current_db_df.height)
+        if start >= end: return
+        
+        self.db_table.setSortingEnabled(False)
+        current_rows = self.db_table.rowCount()
+        self.db_table.setRowCount(current_rows + (end - start))
+        
+        # Solo procesamos el nuevo bloque
+        chunk = self.current_db_df.slice(start, end - start)
+        for i, r in enumerate(chunk.rows(named=True)):
+            row_idx = current_rows + i
+            self.db_table.setItem(row_idx, 0, QTableWidgetItem(str(r["id"])))
+            self.db_table.setItem(row_idx, 1, QTableWidgetItem(r["date"]))
+            self.db_table.setItem(row_idx, 2, QTableWidgetItem(r["white"]))
+            self.db_table.setItem(row_idx, 3, QTableWidgetItem(str(r["w_elo"])))
+            self.db_table.setItem(row_idx, 4, QTableWidgetItem(r["black"]))
+            self.db_table.setItem(row_idx, 5, QTableWidgetItem(str(r["b_elo"])))
+            self.db_table.setItem(row_idx, 6, QTableWidgetItem(r["result"]))
+            self.db_table.item(row_idx, 0).setData(Qt.UserRole, r["id"])
+            
+        self.db_loaded_count = end
         self.db_table.resizeColumnsToContents()
 
     def save_config(self):
-        dbs_info = [{"path": m["path"]} for m in self.db.db_metadata.values() if m.get("path")]
+        # 1. Rutas de bases abiertas
+        dbs_info = [m["path"] for m in self.db.db_metadata.values() if m.get("path")]
+        self.app_db.set_config("open_dbs", dbs_info)
+        
+        # 2. Colores
         colors = {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark}
+        self.app_db.set_config("colors", colors)
         
-        config = {
-            "perf_threshold": getattr(self, 'perf_threshold', 25),
-            "colors": colors,
-            "dbs": dbs_info,
-            "puzzle_db_path": getattr(self, 'puzzle_db_path', None)
-        }
-        
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=4, ensure_ascii=False)
+        # 3. Otros ajustes
+        self.app_db.set_config("perf_threshold", getattr(self, 'perf_threshold', 25))
 
     def load_config(self):
         self.def_light, self.def_dark = "#eeeed2", "#8ca2ad"
-        self.perf_threshold = 25
-        self.puzzle_db_path = None
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.pending_dbs = [info["path"] if isinstance(info, dict) else info for info in data.get("dbs", [])]
-                self.puzzle_db_path = data.get("puzzle_db_path")
-                
-                # Cargar en el widget de puzzles si ya existe
-                if self.puzzle_db_path and os.path.exists(self.puzzle_db_path):
-                    if hasattr(self, 'tab_puzzles'):
-                        self.tab_puzzles.load_db(self.puzzle_db_path)
-                colors = data.get("colors")
-                if colors:
-                    self.def_light = colors.get("light", self.def_light)
-                    self.def_dark = colors.get("dark", self.def_dark)
-                
-                self.perf_threshold = data.get("perf_threshold", 25)
-                # Sincronizar con el widget si ya existe
-                if hasattr(self, 'opening_tree'):
-                    self.opening_tree.perf_threshold = self.perf_threshold
-            except: pass
+        
+        # --- CARGA DESDE SQLITE ---
+        self.perf_threshold = self.app_db.get_config("perf_threshold", 25)
+        
+        # Cargar colores
+        colors = self.app_db.get_config("colors")
+        if colors:
+            self.def_light = colors.get("light", self.def_light)
+            self.def_dark = colors.get("dark", self.def_dark)
+            
+        # Cargar bases de datos abiertas
+        self.pending_dbs = self.app_db.get_config("open_dbs", [])
+        
+        # Sincronizar ajustes con widgets
+        if hasattr(self, 'opening_tree'):
+            self.opening_tree.perf_threshold = self.perf_threshold
