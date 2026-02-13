@@ -1,0 +1,40 @@
+[project]
+name = "fa-chess"
+version = "0.1.2"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "polars>=1.38.0",
+    "pyarrow>=23.0.0",
+    "pyside6>=6.10.2",
+    "python-chess>=1.999",
+    "qtawesome>=1.4.1",
+    "rich>=13.0.0",
+    "tqdm>=4.67.3",
+    "yoyo-migrations>=9.0.0",
+]
+
+[project.scripts]
+fa-chess = "src.main:main"
+fa-chess-convert = "src.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+
+package = true
+
+
+
+[tool.hatch.build.targets.wheel]
+
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-qt>=4.5.0",
+]
