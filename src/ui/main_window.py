@@ -280,9 +280,7 @@ class MainWindow(QMainWindow):
         self.analysis_worker = FullAnalysisWorker(
             self.game.full_mainline,
             depth=self.engine_depth,
-            engine_path=self.engine_path,
-            threads=self.engine_threads,
-            hash_mb=self.engine_hash
+            engine_path=self.engine_path
         )
         
         self.analysis_worker.progress.connect(lambda curr, total: self.progress.setValue(int((curr/total)*100)))
@@ -433,7 +431,14 @@ class MainWindow(QMainWindow):
         self.progress.show()
         self.statusBar().showMessage("Calculando estadísticas...")
         
-        self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash, app_db=self.app_db)
+        self.stats_worker = StatsWorker(
+            self.db, 
+            self.game.current_line_uci, 
+            self.game.board.turn == chess.WHITE, 
+            current_hash, 
+            app_db=self.app_db,
+            min_games=self.min_games
+        )
         self.stats_worker.progress.connect(self.progress.setValue)
         self.stats_worker.finished.connect(self.on_stats_finished); self.stats_worker.start()
 
@@ -1188,7 +1193,8 @@ class MainWindow(QMainWindow):
             "engine_path": self.engine_path,
             "engine_threads": self.engine_threads,
             "engine_hash": self.engine_hash,
-            "engine_depth": self.engine_depth
+            "engine_depth": self.engine_depth,
+            "min_games": self.min_games
         }
         
         dialog = SettingsDialog(current_config, self)
@@ -1202,6 +1208,7 @@ class MainWindow(QMainWindow):
             
             # 2. Actualizar umbral y motor
             self.perf_threshold = new_cfg["perf_threshold"]
+            self.min_games = new_cfg["min_games"]
             self.engine_path = new_cfg["engine_path"]
             self.engine_threads = new_cfg["engine_threads"]
             self.engine_hash = new_cfg["engine_hash"]
@@ -1376,6 +1383,7 @@ class MainWindow(QMainWindow):
         self.app_db.set_config("engine_threads", self.engine_threads)
         self.app_db.set_config("engine_hash", self.engine_hash)
         self.app_db.set_config("engine_depth", self.engine_depth)
+        self.app_db.set_config("min_games", self.min_games)
         
         # 4. Otros ajustes
         self.app_db.set_config("perf_threshold", getattr(self, 'perf_threshold', 25))
@@ -1397,6 +1405,7 @@ class MainWindow(QMainWindow):
         self.engine_threads = self.app_db.get_config("engine_threads", 1)
         self.engine_hash = self.app_db.get_config("engine_hash", 64)
         self.engine_depth = self.app_db.get_config("engine_depth", 10)
+        self.min_games = self.app_db.get_config("min_games", 20)
             
         # Cargar bases de datos abiertas
         self.pending_dbs = self.app_db.get_config("open_dbs", [])

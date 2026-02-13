@@ -177,13 +177,14 @@ class StatsWorker(QThread):
     finished = Signal(object)
     progress = Signal(int) # Porcentaje 0-100
 
-    def __init__(self, db, current_line_uci, is_white_turn, current_hash=None, app_db=None):
+    def __init__(self, db, current_line_uci, is_white_turn, current_hash=None, app_db=None, min_games=0):
         super().__init__()
         self.db = db
         self.app_db = app_db
         self.current_line = current_line_uci
         self.current_hash = current_hash
         self.is_white = is_white_turn
+        self.min_games = min_games
 
     def run(self):
         try:
@@ -267,6 +268,15 @@ class StatsWorker(QThread):
                     ])
                     .sort("c", descending=True)
                 )
+
+            # Verificar umbral de partidas mínimas
+            if not stats.is_empty():
+                max_games = stats["c"].max()
+                if max_games < self.min_games:
+                    # Si no llegamos al mínimo, enviamos un DataFrame vacío pero con un metadato
+                    # o simplemente indicamos a la UI que muestre el mensaje.
+                    # Para simplificar, enviamos el total de partidas en una columna especial.
+                    stats = pl.DataFrame({"_total_pos_games": [stats["c"].sum()]})
 
             stats = stats.with_columns(pl.lit(False).alias("_is_partial"))
             elapsed = time.time() - start

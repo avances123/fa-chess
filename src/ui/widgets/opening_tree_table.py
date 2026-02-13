@@ -110,6 +110,24 @@ class OpeningTreeTable(QWidget):
         
         self.stack.addWidget(self.loading_container)
         
+        # Página 3: Datos insuficientes
+        self.insufficient_container = QWidget()
+        insufficient_layout = QVBoxLayout(self.insufficient_container)
+        
+        self.icon_insufficient = QLabel()
+        self.icon_insufficient.setPixmap(qta.icon('fa5s.info-circle', color='#ccc').pixmap(QSize(32, 32)))
+        self.icon_insufficient.setAlignment(Qt.AlignCenter)
+        
+        self.label_insufficient = QLabel("No hay suficientes partidas")
+        self.label_insufficient.setStyleSheet("color: #888; font-style: italic;")
+        self.label_insufficient.setAlignment(Qt.AlignCenter)
+        
+        insufficient_layout.addStretch()
+        insufficient_layout.addWidget(self.icon_insufficient)
+        insufficient_layout.addWidget(self.label_insufficient)
+        insufficient_layout.addStretch()
+        self.stack.addWidget(self.insufficient_container)
+        
         layout.addWidget(self.stack)
 
     def set_loading(self, loading=True):
@@ -122,9 +140,18 @@ class OpeningTreeTable(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         
-        if stats_df is None or stats_df.height == 0:
+        if stats_df is None or stats_df.is_empty():
+            self.stack.setCurrentIndex(2) # Mostrar página de datos insuficientes
+            self.label_insufficient.setText("No hay partidas en esta base")
             return
 
+        if "_total_pos_games" in stats_df.columns:
+            total = stats_df["_total_pos_games"][0]
+            self.stack.setCurrentIndex(2)
+            self.label_insufficient.setText(f"Datos insuficientes<br>({total} partidas encontradas)")
+            return
+
+        self.stack.setCurrentIndex(0) # Mostrar tabla
         is_white_turn = current_board.turn == chess.WHITE
         self.table.setRowCount(stats_df.height)
         for i, r in enumerate(stats_df.rows(named=True)):

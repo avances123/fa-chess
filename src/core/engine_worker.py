@@ -100,13 +100,14 @@ class FullAnalysisWorker(QThread):
     finished = Signal()
     error_occurred = Signal(str) # Nueva señal de error
 
-    def __init__(self, moves, depth=10, engine_path=None, threads=1, hash_mb=64):
+    def __init__(self, moves, depth=10, engine_path=None):
         super().__init__()
         self.moves = moves
         self.depth = depth
         self.engine_path = engine_path
-        self.threads = threads
-        self.hash_mb = hash_mb
+        # Parámetros hardcodeados para análisis rápido/ligero
+        self.threads = 1
+        self.hash_mb = 16
         self.running = True
 
     def run(self):
@@ -147,8 +148,8 @@ class FullAnalysisWorker(QThread):
 
     def analyze_position(self, engine, board, idx):
         try:
-            # Análisis rápido por profundidad
-            info = engine.analyse(board, chess.engine.Limit(depth=self.depth))
+            # Análisis ultra-rápido para el gráfico: 0.01 segundos o profundidad, lo que ocurra antes
+            info = engine.analyse(board, chess.engine.Limit(time=0.01, depth=self.depth))
             score_obj = info.get("score")
             
             if score_obj:
