@@ -110,18 +110,15 @@ class OpeningTreeTable(QWidget):
         
         self.stack.addWidget(self.loading_container)
         
-        # Página 3: Datos insuficientes
+        # Página 3: Datos insuficientes / Parada de cálculo
         self.insufficient_container = QWidget()
         insufficient_layout = QVBoxLayout(self.insufficient_container)
-        
         self.icon_insufficient = QLabel()
-        self.icon_insufficient.setPixmap(qta.icon('fa5s.info-circle', color='#ccc').pixmap(QSize(32, 32)))
+        self.icon_insufficient.setPixmap(qta.icon('fa5s.hand-paper', color='#ccc').pixmap(QSize(32, 32)))
         self.icon_insufficient.setAlignment(Qt.AlignCenter)
-        
-        self.label_insufficient = QLabel("No hay suficientes partidas")
+        self.label_insufficient = QLabel("Cálculo detenido: Volumen muy bajo")
         self.label_insufficient.setStyleSheet("color: #888; font-style: italic;")
         self.label_insufficient.setAlignment(Qt.AlignCenter)
-        
         insufficient_layout.addStretch()
         insufficient_layout.addWidget(self.icon_insufficient)
         insufficient_layout.addWidget(self.label_insufficient)
@@ -134,21 +131,20 @@ class OpeningTreeTable(QWidget):
         """Muestra u oculta el estado de carga"""
         self.stack.setCurrentIndex(1 if loading else 0)
 
-    def update_tree(self, stats_df, current_board, opening_name, is_filtered=False, total_view_count=0):
+    def update_tree(self, stats_df, current_board, opening_name, is_filtered=False, total_view_count=0, next_move_uci=None):
         self.set_loading(False) # Asegurar que mostramos la tabla al recibir datos
         self.label_eco.setText(opening_name if opening_name else "Posición desconocida")
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         
+        # Si no hay datos o es un DataFrame de aviso de parada
         if stats_df is None or stats_df.is_empty():
-            self.stack.setCurrentIndex(2) # Mostrar página de datos insuficientes
-            self.label_insufficient.setText("No hay partidas en esta base")
+            self.stack.setCurrentIndex(2) # Mostrar página de datos insuficientes/parada
+            self.label_insufficient.setText(f"Cálculo detenido<br>(Variante con muy pocas partidas)")
             return
 
-        if "_total_pos_games" in stats_df.columns:
-            total = stats_df["_total_pos_games"][0]
-            self.stack.setCurrentIndex(2)
-            self.label_insufficient.setText(f"Datos insuficientes<br>({total} partidas encontradas)")
+        # Limpieza de seguridad para columnas de versiones anteriores
+        if "uci" not in stats_df.columns:
             return
 
         self.stack.setCurrentIndex(0) # Mostrar tabla
@@ -164,22 +160,32 @@ class OpeningTreeTable(QWidget):
             font = it_move.font()
             font.setBold(True)
             it_move.setFont(font)
+            
+            # RESALTAR SI ES LA JUGADA DE LA PARTIDA
+            is_played = r["uci"] == next_move_uci
+            if is_played:
+                it_move.setBackground(QColor("#f6f669"))
+            
             self.table.setItem(i, 0, it_move)
 
             # 2. Frecuencia
             it_count = SortableWidgetItem(f"{r['c']:,}".replace(",", "."))
             it_count.setData(Qt.UserRole, r["c"])
             it_count.setTextAlignment(Qt.AlignCenter)
+            if is_played: it_count.setBackground(QColor("#f6f669"))
             self.table.setItem(i, 1, it_count)
 
             # 3. Barra de resultados (Widget)
-            self.table.setCellWidget(i, 2, ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white_turn))
+            res_widget = ResultsWidget(r["w"], r["d"], r["b"], r["c"], is_white_turn)
+            if is_played: res_widget.setStyleSheet("background-color: #f6f669;")
+            self.table.setCellWidget(i, 2, res_widget)
 
             # 4. Win %
             win_rate = ((r["w"] + 0.5 * r["d"]) / r["c"] if is_white_turn else (r["b"] + 0.5 * r["d"]) / r["c"]) * 100
             it_win = SortableWidgetItem(f"{win_rate:.1f}%")
             it_win.setData(Qt.UserRole, win_rate)
             it_win.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if is_played: it_win.setBackground(QColor("#f6f669"))
             self.table.setItem(i, 3, it_win)
 
             # 5. AvElo (Elo medio del bando que mueve)
@@ -187,6 +193,7 @@ class OpeningTreeTable(QWidget):
             it_elo = SortableWidgetItem(str(av_elo))
             it_elo.setData(Qt.UserRole, av_elo)
             it_elo.setTextAlignment(Qt.AlignCenter)
+            if is_played: it_elo.setBackground(QColor("#f6f669"))
             self.table.setItem(i, 4, it_elo)
 
             # 6. Perf (Performance y lógica de colores)
@@ -197,6 +204,7 @@ class OpeningTreeTable(QWidget):
             it_perf = SortableWidgetItem(str(perf))
             it_perf.setData(Qt.UserRole, perf)
             it_perf.setTextAlignment(Qt.AlignCenter)
+            if is_played: it_perf.setBackground(QColor("#f6f669"))
             
             # Lógica de colores comparando Perf con AvElo usando el umbral configurable
             if perf > av_elo + self.perf_threshold:

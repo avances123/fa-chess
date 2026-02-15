@@ -41,12 +41,6 @@ class SettingsDialog(QDialog):
                                  "Si Perf < AvElo - Umbral -> Rojo (Resultado pobre)")
         app_layout.addRow("Umbral de Performance (Árbol):", self.spin_perf)
         
-        self.spin_min_games = QSpinBox()
-        self.spin_min_games.setRange(0, 1000)
-        self.spin_min_games.setValue(self.config.get("min_games", 20))
-        self.spin_min_games.setToolTip("Ocultar el árbol si la jugada más frecuente tiene menos de estas partidas.")
-        app_layout.addRow("Mínimo de partidas (Árbol):", self.spin_min_games)
-        
         self.tabs.addTab(tab_appearance, qta.icon("fa5s.palette"), "Apariencia")
         
         # --- PESTAÑA MOTOR (STOCKFISH) ---
@@ -123,7 +117,6 @@ class SettingsDialog(QDialog):
             "color_light": self.config["color_light"],
             "color_dark": self.config["color_dark"],
             "perf_threshold": self.spin_perf.value(),
-            "min_games": self.spin_min_games.value(),
             "engine_path": self.edit_engine_path.text(),
             "engine_threads": self.spin_threads.value(),
             "engine_hash": self.spin_hash.value(),

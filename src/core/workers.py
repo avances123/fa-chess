@@ -269,15 +269,6 @@ class StatsWorker(QThread):
                     .sort("c", descending=True)
                 )
 
-            # Verificar umbral de partidas mínimas
-            if not stats.is_empty():
-                max_games = stats["c"].max()
-                if max_games < self.min_games:
-                    # Si no llegamos al mínimo, enviamos un DataFrame vacío pero con un metadato
-                    # o simplemente indicamos a la UI que muestre el mensaje.
-                    # Para simplificar, enviamos el total de partidas en una columna especial.
-                    stats = pl.DataFrame({"_total_pos_games": [stats["c"].sum()]})
-
             stats = stats.with_columns(pl.lit(False).alias("_is_partial"))
             elapsed = time.time() - start
             logger.debug(f"StatsWorker: Cálculo finalizado en {elapsed:.2f}s")

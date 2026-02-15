@@ -5,6 +5,7 @@ import io
 from datetime import datetime
 import chess
 import chess.pgn
+import chess.polyglot
 import polars as pl
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QTableWidget, QTableWidgetItem, QLabel, QPushButton, 
@@ -65,6 +66,7 @@ class MainWindow(QMainWindow):
         self.db_batch_size = 100
         self.db_loaded_count = 0
         self.current_db_df = None
+        self.last_pos_count = 1000000 # Inicializar alto para permitir el primer cálculo
         
         # Conectar señales del controlador de juego
         self.game.position_changed.connect(self.update_ui)
@@ -99,11 +101,12 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F"), self, self.flip_boards)
         QShortcut(QKeySequence("E"), self, self.toggle_engine_shortcut)
         QShortcut(QKeySequence("S"), self, self.search_current_position)
+        QShortcut(QKeySequence("Ctrl+S"), self, self.save_to_active_db)
+
     def flip_boards(self):
         self.board_ana.flip()
 
     def search_current_position(self):
-        import chess.polyglot
         pos_hash = chess.polyglot.zobrist_hash(self.game.board)
         df = self.db.get_active_df()
         if df is None:
@@ -354,6 +357,7 @@ class MainWindow(QMainWindow):
     def toggle_engine_shortcut(self): self.action_engine.toggle(); self.toggle_engine(self.action_engine.isChecked())
 
     def start_new_game(self):
+        self.last_pos_count = 1000000 # Resetear para permitir cálculo inicial
         self.game.load_uci_line(""); self.game_header.clear_info()
 
     def load_game_from_list(self, item):
@@ -365,6 +369,7 @@ class MainWindow(QMainWindow):
 
     def change_reference_db(self, name):
         if self.db.set_reference_db(name):
+            self.last_pos_count = 1000000 # Forzar que se calcule la posición actual con la nueva base
             self.update_stats()
 
     def refresh_reference_combo(self):
@@ -410,11 +415,53 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_active_workers'): self._active_workers = []
         self._active_workers = [w for w in self._active_workers if w.isRunning()]
         
-        import chess.polyglot
+        # --- ALGORITMO DE PARADA INTELIGENTE POR VOLUMEN ---
+        # 1. La posición inicial SIEMPRE se calcula
+        is_starting_pos = self.game.board.fen() == chess.STARTING_FEN
+        
+        if not is_starting_pos:
+            # 2. Consultar si la posición PADRE tenía bajo volumen
+            parent_board = self.game.board.copy()
+            if parent_board.move_stack:
+                parent_board.pop()
+                p_hash = chess.polyglot.zobrist_hash(parent_board)
+                ref_path = self.db.get_reference_path()
+                
+                # Buscamos en RAM o SQLite los datos del padre
+                p_stats = self.db.get_cached_stats(p_hash)
+                if p_stats is None and ref_path:
+                    p_stats = self.app_db.get_opening_stats(ref_path, p_hash)
+                
+                # VALIDACIÓN: Si los datos del padre son antiguos (no tienen columna 'uci'), los ignoramos
+                if p_stats is not None and "uci" not in p_stats.columns:
+                    p_stats = None
+
+                if p_stats is not None and not p_stats.is_empty() and "c" in p_stats.columns:
+                    total_parent = p_stats["c"].sum()
+                    if total_parent <= 10:
+                        opening_name, _ = self.eco.get_opening_name(self.game.current_line_uci)
+                        self.opening_tree.update_tree(None, self.game.board, opening_name)
+                        
+                        # PERSISTENCIA: Guardamos un DataFrame vacío en caché para esta posición
+                        # para que los hijos sepan que aquí ya no había volumen.
+                        empty_df = pl.DataFrame(schema=cached_res.schema if cached_res is not None else None)
+                        self.db.cache_stats(current_hash, empty_df)
+                        ref_path = self.db.get_reference_path()
+                        if ref_path:
+                            self.app_db.save_opening_stats(ref_path, current_hash, empty_df)
+                            
+                        self.statusBar().showMessage("Cálculo omitido: Variante sin volumen teórico", 2000)
+                        return
+
         current_hash = chess.polyglot.zobrist_hash(self.game.board)
         
         # --- CONSULTA SÍNCRONA DE CACHÉ (INSTANTÁNEA) ---
         cached_res = self.db.get_cached_stats(current_hash)
+        
+        # Si los datos en caché son de la versión vieja (sin uci), forzamos recálculo
+        if cached_res is not None and "uci" not in cached_res.columns:
+            cached_res = None
+            
         if cached_res is not None:
             # Si está en caché, actualizamos directamente sin spinner ni hilos
             self.on_stats_finished(cached_res)
@@ -453,8 +500,20 @@ class MainWindow(QMainWindow):
         # get_opening_name ahora devuelve (nombre, profundidad)
         opening_name, _ = self.eco.get_opening_name(self.game.current_line_uci)
         
+        # Identificar el siguiente movimiento en la partida actual para resaltarlo
+        next_move_uci = None
+        if self.game.current_idx < len(self.game.full_mainline):
+            next_move_uci = self.game.full_mainline[self.game.current_idx].uci()
+
+        # ACTUALIZAR EL CONTADOR DE VOLUMEN CON DATOS DE LA BASE DE REFERENCIA
+        # Sumamos la columna 'c' (count) del resultado del árbol
+        if res is not None and not res.is_empty() and "c" in res.columns:
+            self.last_pos_count = res["c"].sum()
+        else:
+            self.last_pos_count = 0
+
         # Actualizar el árbol (él sí muestra datos de la posición)
-        self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view)
+        self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view, next_move_uci=next_move_uci)
         
         is_partial = False
         if res is not None and res.height > 0:
@@ -499,7 +558,7 @@ class MainWindow(QMainWindow):
         ))
         
         self.save_action = self._create_action(
-            "&Guardar Base Activa", 'fa5s.save', "Ctrl+S", self.save_to_active_db,
+            "&Guardar Base Activa (Persistir)", 'fa5s.save', "Ctrl+S", self.save_to_active_db,
             "Persistir los cambios de la base activa en el disco", color='#1976d2'
         )
         file_menu.addAction(self.save_action)
@@ -579,6 +638,8 @@ class MainWindow(QMainWindow):
         ))
         
         # Esta acción se define en setup_toolbar, aquí solo la reutilizamos/sincronizamos
+        # Le ponemos texto para que en el menú se vea bien
+        self.action_engine.setText("&Análisis Infinito (Motor)")
         board_menu.addAction(self.action_engine)
         
         board_menu.addSeparator()
@@ -1278,7 +1339,7 @@ class MainWindow(QMainWindow):
             if criteria.get("result") != "Cualquiera": is_empty = False
             if is_empty: self.reset_filters(); return
             if criteria.get("use_position"):
-                import chess.polyglot; criteria["position_hash"] = chess.polyglot.zobrist_hash(self.game.board)
+                criteria["position_hash"] = chess.polyglot.zobrist_hash(self.game.board)
             self.search_criteria = criteria; self.db.filter_db(self.search_criteria)
 
     def refresh_db_list(self, df_to_show=None):
