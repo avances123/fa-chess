@@ -174,7 +174,7 @@ class PuzzleSaveWorker(QThread):
             print(f"Error en AppDB guardando puzzle: {e}")
 
 class StatsWorker(QThread):
-    finished = Signal(object)
+    finished = Signal(object, object) # stats_df, engine_eval
     progress = Signal(int) # Porcentaje 0-100
 
     def __init__(self, db, current_line_uci, is_white_turn, current_hash=None, app_db=None, min_games=0):
@@ -189,17 +189,17 @@ class StatsWorker(QThread):
     def run(self):
         try:
             if not self.current_hash:
-                self.finished.emit(None)
+                self.finished.emit(None, None)
                 return
 
             from src.config import logger
             import time
 
             # 1. Intentar obtener de la caché de RAM
-            cached = self.db.get_cached_stats(self.current_hash)
+            cached, cached_eval = self.db.get_cached_stats(self.current_hash)
             if cached is not None:
                 logger.debug(f"StatsWorker: HIT Cache RAM para {self.current_hash}")
-                self.finished.emit(cached)
+                self.finished.emit(cached, cached_eval)
                 return
 
             # 2. Intentar obtener de la caché PERSISTENTE
@@ -207,17 +207,17 @@ class StatsWorker(QThread):
             is_full_base = self.db.reference_db_name is not None or self.db.current_filter_query is None
             
             if db_path and self.app_db:
-                persistent_cached = self.app_db.get_opening_stats(db_path, self.current_hash)
+                persistent_cached, persistent_eval = self.app_db.get_opening_stats(db_path, self.current_hash)
                 if persistent_cached is not None:
                     logger.info(f"StatsWorker: HIT Cache SQLite para {self.current_hash}")
-                    self.db.cache_stats(self.current_hash, persistent_cached)
-                    self.finished.emit(persistent_cached)
+                    self.db.cache_stats(self.current_hash, persistent_cached, persistent_eval)
+                    self.finished.emit(persistent_cached, persistent_eval)
                     return
 
             # 3. Cálculo con Polars
             lazy_view = self.db.get_reference_view()
             if lazy_view is None:
-                self.finished.emit(None)
+                self.finished.emit(None, None)
                 return
 
             logger.info(f"StatsWorker: Calculando árbol con Polars para {self.current_hash}...")
@@ -274,18 +274,18 @@ class StatsWorker(QThread):
             logger.debug(f"StatsWorker: Cálculo finalizado en {elapsed:.2f}s")
             
             # Guardamos en RAM
-            self.db.cache_stats(self.current_hash, stats)
+            self.db.cache_stats(self.current_hash, stats, None) # Eval es None al calcular nuevo
             
             # 4. Guardamos en PERSISTENTE si es base completa
             if is_full_base and db_path and self.app_db:
                 logger.info(f"StatsWorker: Persistiendo resultado en SQLite...")
-                self.app_db.save_opening_stats(db_path, self.current_hash, stats)
+                self.app_db.save_opening_stats(db_path, self.current_hash, stats, None)
                 
-            self.finished.emit(stats)
+            self.finished.emit(stats, None)
 
         except Exception as e:
             print(f"Error en StatsWorker: {e}")
-            self.finished.emit(None)
+            self.finished.emit(None, None)
 
     def _build_stats_query(self, lazy_df, target):
         """Helper para construir la consulta base de estadísticas"""

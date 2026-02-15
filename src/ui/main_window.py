@@ -44,6 +44,7 @@ from src.core.engine_worker import EngineWorker, FullAnalysisWorker
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._is_booting = True # BLOQUEO DE GUARDADO INICIAL
         self.setWindowTitle("fa-chess")
         self.setStyleSheet(LIGHT_STYLE)
         
@@ -90,6 +91,19 @@ class MainWindow(QMainWindow):
         self.init_shortcuts()
         self.update_ui()
         self.tabs.setCurrentIndex(1) # Arrancar en la pestaña de Gestor de Bases
+        
+        # --- CARGA DIFERIDA DE REFERENCIA ---
+        # Primero cargamos las bases del config
+        for path in self.pending_dbs:
+            if path and os.path.exists(path):
+                self.load_parquet(path)
+        
+        # Ahora que están en memoria, aplicamos la referencia persistida
+        if hasattr(self, 'pending_reference_db') and self.pending_reference_db:
+            self.db.set_reference_db(self.pending_reference_db)
+            
+        self._is_booting = False # ARRANQUE COMPLETADO: Permitir guardado
+        self.refresh_reference_combo()
         self._fix_tab_buttons()
         self.statusBar().showMessage("Listo")
 
@@ -179,6 +193,10 @@ class MainWindow(QMainWindow):
         # Árbol de Aperturas
         self.opening_tree = OpeningTreeTable()
         self.opening_tree.perf_threshold = self.perf_threshold # Sincronizar configuración
+        self.opening_tree.venom_eval = self.venom_eval
+        self.opening_tree.venom_win = self.venom_win
+        self.opening_tree.practical_win = self.practical_win
+        
         self.opening_tree.move_selected.connect(lambda uci: self.game.make_move(chess.Move.from_uci(uci)))
         self.opening_tree.move_hovered.connect(self.board_ana.set_hover_move)
         self.opening_tree.label_global_stats.clicked.connect(self.open_search)
@@ -274,12 +292,6 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.btn_stop_op)
 
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
-        pending = getattr(self, 'pending_dbs', [])
-        for path in pending:
-            if path and os.path.exists(path):
-                self.load_parquet(path)
-        
-        self.refresh_reference_combo()
 
     def start_full_analysis(self):
         if self.action_engine.isChecked(): self.action_engine.toggle(); self.toggle_engine(False)
@@ -318,8 +330,10 @@ class MainWindow(QMainWindow):
             self.engine_worker = EngineWorker(
                 engine_path=self.engine_path,
                 threads=self.engine_threads,
-                hash_mb=self.engine_hash
+                hash_mb=self.engine_hash,
+                depth_limit=self.engine_depth
             )
+            # La señal ahora vuelve a ser de 3 argumentos
             self.engine_worker.info_updated.connect(self.on_engine_update)
             self.engine_worker.update_position(self.game.board.fen())
             self.engine_worker.start()
@@ -331,11 +345,21 @@ class MainWindow(QMainWindow):
         if not getattr(self, 'is_dragging', False): self.board_ana.set_engine_move(best_move if best_move else None)
         try:
             self.label_eval.setText(eval_str)
-            if "M" in eval_str: val = 1000 if "+" in eval_str or eval_str[0].isdigit() or (eval_str.startswith("M") and not eval_str.startswith("-M")) else -1000; cp_val = 2000 if val > 0 else -2000
-            else: val = int(float(eval_str) * 100); cp_val = val
+            if "M" in eval_str: 
+                val = 1000 if "+" in eval_str or eval_str[0].isdigit() or (eval_str.startswith("M") and not eval_str.startswith("-M")) else -1000
+                cp_val = 2000 if val > 0 else -2000
+            else: 
+                # Intentar parsear el valor numérico para la barra
+                val_to_parse = eval_str.split("|")[-1].strip() if "|" in eval_str else eval_str
+                val = int(float(val_to_parse) * 100)
+                cp_val = val
+            
             self.eval_bar.setValue(val)
-            if 0 <= self.game.current_idx < len(self.game_evals): self.game_evals[self.game.current_idx] = cp_val; self.eval_graph.set_evaluations(self.game_evals)
-        except: pass
+            if 0 <= self.game.current_idx < len(self.game_evals): 
+                self.game_evals[self.game.current_idx] = cp_val
+                self.eval_graph.set_evaluations(self.game_evals)
+        except Exception as e: 
+            pass
 
     def closeEvent(self, event):
         if hasattr(self, 'engine_worker'): self.engine_worker.stop(); self.engine_worker.wait()
@@ -375,8 +399,12 @@ class MainWindow(QMainWindow):
             self.game.load_uci_line(row["full_line"]); self.game.go_start()
             self.game_header.update_info(row); self.tabs.setCurrentIndex(0)
 
-    def change_reference_db(self, name):
-        if self.db.set_reference_db(name):
+    def change_reference_db(self, display_name):
+        # Obtener el nombre real (con extensión) de la data del combo
+        idx = self.opening_tree.combo_ref.currentIndex()
+        real_name = self.opening_tree.combo_ref.itemData(idx) or display_name
+        
+        if self.db.set_reference_db(real_name):
             self.last_pos_count = 1000000 # Forzar que se calcule la posición actual con la nueva base
             self.update_stats()
 
@@ -384,16 +412,31 @@ class MainWindow(QMainWindow):
         """Actualiza la lista de bases disponibles en el combo del árbol"""
         if not hasattr(self, 'opening_tree'): return
         self.opening_tree.combo_ref.blockSignals(True)
+        
+        # Determinar qué base debería estar seleccionada
+        # Prioridad: 1. La que ya está en el combo, 2. La base de referencia del DBManager, 3. Base Activa
         current = self.opening_tree.combo_ref.currentText()
+        if not current or current == "Base Activa":
+            ref_name = self.db.reference_db_name
+            current = ref_name if ref_name else "Base Activa"
+
         self.opening_tree.combo_ref.clear()
         self.opening_tree.combo_ref.addItem("Base Activa")
         
-        # Añadir todas las bases abiertas (excepto Clipbase si ya es la activa, para no duplicar info mentalmente)
+        # Añadir todas las bases abiertas
         for name in sorted(self.db.dbs.keys()):
-            self.opening_tree.combo_ref.addItem(name)
+            display_name = name.replace(".parquet", "")
+            self.opening_tree.combo_ref.addItem(display_name, name) # name es userData
             
-        # Intentar restaurar la selección
-        idx = self.opening_tree.combo_ref.findText(current)
+        # Intentar restaurar la selección comparando con userData (nombre real)
+        target_real_name = current if ".parquet" in current else self.db.reference_db_name
+        idx = -1
+        if target_real_name:
+            for i in range(self.opening_tree.combo_ref.count()):
+                if self.opening_tree.combo_ref.itemData(i) == target_real_name:
+                    idx = i
+                    break
+        
         if idx >= 0: self.opening_tree.combo_ref.setCurrentIndex(idx)
         else: self.opening_tree.combo_ref.setCurrentIndex(0)
         
@@ -423,6 +466,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_active_workers'): self._active_workers = []
         self._active_workers = [w for w in self._active_workers if w.isRunning()]
         
+        current_hash = chess.polyglot.zobrist_hash(self.game.board)
+        
         # --- ALGORITMO DE PARADA INTELIGENTE POR VOLUMEN ---
         # 1. La posición inicial SIEMPRE se calcula
         is_starting_pos = self.game.board.fen() == chess.STARTING_FEN
@@ -436,9 +481,9 @@ class MainWindow(QMainWindow):
                 ref_path = self.db.get_reference_path()
                 
                 # Buscamos en RAM o SQLite los datos del padre
-                p_stats = self.db.get_cached_stats(p_hash)
+                p_stats, p_eval = self.db.get_cached_stats(p_hash)
                 if p_stats is None and ref_path:
-                    p_stats = self.app_db.get_opening_stats(ref_path, p_hash)
+                    p_stats, p_eval = self.app_db.get_opening_stats(ref_path, p_hash)
                 
                 # VALIDACIÓN: Si los datos del padre son antiguos (no tienen columna 'uci'), los ignoramos
                 if p_stats is not None and "uci" not in p_stats.columns:
@@ -452,27 +497,26 @@ class MainWindow(QMainWindow):
                         
                         # PERSISTENCIA: Guardamos un DataFrame vacío en caché para esta posición
                         # para que los hijos sepan que aquí ya no había volumen.
-                        empty_df = pl.DataFrame(schema=cached_res.schema if cached_res is not None else None)
-                        self.db.cache_stats(current_hash, empty_df)
+                        empty_df = pl.DataFrame(schema={"uci": pl.String, "c": pl.UInt32})
+                        self.db.cache_stats(current_hash, empty_df, None)
                         ref_path = self.db.get_reference_path()
                         if ref_path:
-                            self.app_db.save_opening_stats(ref_path, current_hash, empty_df)
+                            self.app_db.save_opening_stats(ref_path, current_hash, empty_df, None)
                             
                         self.statusBar().showMessage("Cálculo omitido: Variante sin volumen teórico", 2000)
                         return
 
-        current_hash = chess.polyglot.zobrist_hash(self.game.board)
-        
         # --- CONSULTA SÍNCRONA DE CACHÉ (INSTANTÁNEA) ---
-        cached_res = self.db.get_cached_stats(current_hash)
+        cached_res, cached_eval = self.db.get_cached_stats(current_hash)
         
         # Si los datos en caché son de la versión vieja (sin uci), forzamos recálculo
         if cached_res is not None and "uci" not in cached_res.columns:
             cached_res = None
+            cached_eval = None
             
         if cached_res is not None:
             # Si está en caché, actualizamos directamente sin spinner ni hilos
-            self.on_stats_finished(cached_res)
+            self.on_stats_finished(cached_res, cached_eval)
             return
 
         if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
@@ -500,7 +544,7 @@ class MainWindow(QMainWindow):
     def update_stats(self):
         self.stats_timer.start(50)
 
-    def on_stats_finished(self, res):
+    def on_stats_finished(self, res, engine_eval):
         self.progress.hide()
         is_filtered = self.db.current_filter_df is not None
         total_view = self.db.get_view_count()
@@ -514,25 +558,75 @@ class MainWindow(QMainWindow):
             next_move_uci = self.game.full_mainline[self.game.current_idx].uci()
 
         # ACTUALIZAR EL CONTADOR DE VOLUMEN CON DATOS DE LA BASE DE REFERENCIA
-        # Sumamos la columna 'c' (count) del resultado del árbol
         if res is not None and not res.is_empty() and "c" in res.columns:
             self.last_pos_count = res["c"].sum()
+            
+            # NUEVO: Intentar pre-cargar evaluaciones de las ramas desde la caché
+            branch_evals = {}
+            ref_path = self.db.get_reference_path()
+            if ref_path:
+                for move_uci in res["uci"]:
+                    try:
+                        temp_b = self.game.board.copy()
+                        temp_b.push_uci(move_uci)
+                        h = chess.polyglot.zobrist_hash(temp_b)
+                        _, score = self.app_db.get_opening_stats(ref_path, h)
+                        if score is not None:
+                            branch_evals[move_uci] = score
+                    except: continue
+            
+            # Actualizar el árbol con lo que ya sabemos de antes
+            self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view, next_move_uci=next_move_uci, engine_eval=engine_eval)
+            if branch_evals:
+                self.opening_tree.update_branch_evals(branch_evals, self.game.board.turn == chess.WHITE)
+                
+            # NUEVO: Si el motor principal NO está calculando MultiPV (que ya lo quitamos), 
+            # lanzamos un escáner ligero para rellenar los huecos
+            if res is not None and not res.is_empty():
+                self.start_tree_scanner(res["uci"].to_list())
+
+            # Feedback de árbol parcial
+            is_partial = "_is_partial" in res.columns and res.row(0, named=True).get("_is_partial")
+            if is_partial: 
+                self.statusBar().showMessage("⚠️ Árbol parcial. El límite es de 1M de partidas.", 5000)
+                self.opening_tree.label_global_stats.setStyleSheet(STYLE_BADGE_ERROR)
+            else: 
+                self.statusBar().showMessage("Listo", 2000)
         else:
             self.last_pos_count = 0
-
-        # Actualizar el árbol (él sí muestra datos de la posición)
-        self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view, next_move_uci=next_move_uci)
-        
-        is_partial = False
-        if res is not None and res.height > 0:
-            is_partial = "_is_partial" in res.columns and res.row(0, named=True).get("_is_partial")
-        
-        if is_partial: 
-            self.statusBar().showMessage("⚠️ Árbol parcial. El límite es de 1M de partidas.", 5000)
-            # Solo en caso de árbol parcial mostramos error en el badge del árbol
-            self.opening_tree.label_global_stats.setStyleSheet(STYLE_BADGE_ERROR)
-        else: 
+            self.opening_tree.update_tree(res, self.game.board, opening_name, is_filtered, total_view, next_move_uci=next_move_uci, engine_eval=engine_eval)
             self.statusBar().showMessage("Listo", 2000)
+
+    def start_tree_scanner(self, moves_uci):
+        """Inicia un escáner secuencial para evaluar todas las ramas del árbol"""
+        if hasattr(self, 'tree_scanner') and self.tree_scanner.isRunning():
+            self.tree_scanner.stop()
+            self.tree_scanner.wait()
+            
+        from src.core.engine_worker import TreeScannerWorker
+        self.tree_scanner = TreeScannerWorker(self.engine_path, self.game.board.fen(), moves_uci, depth=self.tree_depth)
+        self.tree_scanner.eval_ready.connect(self.on_tree_scan_result)
+        self.tree_scanner.start()
+
+    def on_tree_scan_result(self, uci, score_str):
+        """Recibe una evaluación formateada del escáner y la aplica"""
+        # 1. Actualizar el árbol visualmente (en tiempo real)
+        self.opening_tree.update_branch_evals({uci: score_str}, self.game.board.turn == chess.WHITE)
+        
+        # 2. Convertir string a float para persistir en la caché numérica
+        try:
+            if "M" in score_str:
+                num_score = 10.0 if "M" in score_str and not score_str.startswith("-") else -10.0
+            else:
+                num_score = float(score_str)
+                
+            ref_path = self.db.get_reference_path()
+            if ref_path:
+                temp_b = self.game.board.copy()
+                temp_b.push_uci(uci)
+                h = chess.polyglot.zobrist_hash(temp_b)
+                self.app_db.update_opening_eval(ref_path, h, num_score)
+        except: pass
 
     def _create_action(self, text, icon_name, shortcut="", slot=None, tip="", color=None, is_checkable=False):
         """Helper factory para crear una QAction."""
@@ -1267,7 +1361,11 @@ class MainWindow(QMainWindow):
             "engine_threads": self.engine_threads,
             "engine_hash": self.engine_hash,
             "engine_depth": self.engine_depth,
-            "min_games": self.min_games
+            "tree_depth": self.tree_depth,
+            "min_games": self.min_games,
+            "venom_eval": self.venom_eval,
+            "venom_win": self.venom_win,
+            "practical_win": self.practical_win
         }
         
         dialog = SettingsDialog(current_config, self)
@@ -1279,30 +1377,39 @@ class MainWindow(QMainWindow):
             self.board_ana.color_dark = new_cfg["color_dark"]
             self.board_ana.update_board()
             
-            # 2. Actualizar umbral y motor
+            # 2. Actualizar motor y umbrales (ASIGNACIÓN EXPLÍCITA)
             self.perf_threshold = new_cfg["perf_threshold"]
-            self.min_games = new_cfg["min_games"]
             self.engine_path = new_cfg["engine_path"]
             self.engine_threads = new_cfg["engine_threads"]
             self.engine_hash = new_cfg["engine_hash"]
             self.engine_depth = new_cfg["engine_depth"]
+            self.tree_depth = new_cfg["tree_depth"]
             
-            # Sincronizar widgets
+            # 3. Actualizar veneno
+            self.venom_eval = new_cfg["venom_eval"]
+            self.venom_win = new_cfg["venom_win"]
+            self.practical_win = new_cfg["practical_win"]
+            
+            # Sincronizar widgets del árbol
             self.opening_tree.perf_threshold = self.perf_threshold
+            self.opening_tree.venom_eval = self.venom_eval
+            self.opening_tree.venom_win = self.venom_win
+            self.opening_tree.practical_win = self.practical_win
             
-            # 3. Actualizar tablero de ejercicios (si existe)
+            # 4. Actualizar tablero de ejercicios si existe
             if hasattr(self, 'tab_puzzles'):
                 self.tab_puzzles.chess_board.color_light = self.board_ana.color_light
                 self.tab_puzzles.chess_board.color_dark = self.board_ana.color_dark
                 self.tab_puzzles.chess_board.update_board()
             
+            # 5. Persistir inmediatamente
             self.save_config()
-            self.statusBar().showMessage("Configuración actualizada", 3000)
+            self.statusBar().showMessage("Configuración guardada y aplicada", 3000)
             
-            # 4. Reiniciar el motor si está activo para aplicar cambios (Threads, Hash, etc.)
+            # 6. REINICIO CRÍTICO DEL MOTOR
             if hasattr(self, 'action_engine') and self.action_engine.isChecked():
-                self.toggle_engine(False) # Apaga el actual
-                self.toggle_engine(True)  # Arranca el nuevo con los nuevos parámetros
+                self.toggle_engine(False)
+                self.toggle_engine(True)
 
     def reset_filters(self):
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}; self.db.set_active_db(self.db.active_db_name)
@@ -1361,16 +1468,17 @@ class MainWindow(QMainWindow):
         # --- ACTUALIZAR INDICADORES "DIRTY" ---
         for i in range(self.db_sidebar.list_widget.count()):
             it = self.db_sidebar.list_widget.item(i)
-            db_name = it.data(Qt.UserRole + 1) or it.text().replace("*", "").strip()
-            if not it.data(Qt.UserRole + 1): it.setData(Qt.UserRole + 1, db_name)
+            # Recuperar nombre real del UserRole
+            db_name = it.data(Qt.UserRole + 1)
+            display_name = db_name.replace(".parquet", "") if db_name else it.text().replace("*", "").strip()
             
             is_dirty = self.db.is_dirty(db_name)
             if is_dirty:
-                it.setText(f"{db_name} *")
+                it.setText(f"{display_name} *")
                 if not self.db.db_metadata.get(db_name, {}).get("read_only", True):
                     it.setForeground(QColor("#1976d2"))
             else:
-                it.setText(db_name)
+                it.setText(display_name)
                 if self.db.db_metadata.get(db_name, {}).get("read_only", True): it.setForeground(QColor("#888888"))
                 else: it.setForeground(QColor("#000000"))
 
@@ -1443,6 +1551,8 @@ class MainWindow(QMainWindow):
         self.db_table.resizeColumnsToContents()
 
     def save_config(self):
+        if getattr(self, '_is_booting', False): return # No guardar durante el arranque
+        
         # 1. Rutas de bases abiertas
         dbs_info = [m["path"] for m in self.db.db_metadata.values() if m.get("path")]
         self.app_db.set_config("open_dbs", dbs_info)
@@ -1456,7 +1566,12 @@ class MainWindow(QMainWindow):
         self.app_db.set_config("engine_threads", self.engine_threads)
         self.app_db.set_config("engine_hash", self.engine_hash)
         self.app_db.set_config("engine_depth", self.engine_depth)
+        self.app_db.set_config("tree_depth", self.tree_depth)
         self.app_db.set_config("min_games", self.min_games)
+        self.app_db.set_config("venom_eval", self.venom_eval)
+        self.app_db.set_config("venom_win", self.venom_win)
+        self.app_db.set_config("practical_win", self.practical_win)
+        self.app_db.set_config("reference_db", self.db.reference_db_name)
         
         # 4. Otros ajustes
         self.app_db.set_config("perf_threshold", getattr(self, 'perf_threshold', 25))
@@ -1524,7 +1639,14 @@ class MainWindow(QMainWindow):
         self.engine_threads = self.app_db.get_config("engine_threads", 1)
         self.engine_hash = self.app_db.get_config("engine_hash", 64)
         self.engine_depth = self.app_db.get_config("engine_depth", 10)
+        self.tree_depth = self.app_db.get_config("tree_depth", 12)
         self.min_games = self.app_db.get_config("min_games", 20)
+        
+        # Parámetros del Buscador de Veneno
+        self.venom_eval = self.app_db.get_config("venom_eval", 0.5)
+        self.venom_win = self.app_db.get_config("venom_win", 52)
+        self.practical_win = self.app_db.get_config("practical_win", 60)
+        self.pending_reference_db = self.app_db.get_config("reference_db", None)
             
         # Cargar bases de datos abiertas
         self.pending_dbs = self.app_db.get_config("open_dbs", [])

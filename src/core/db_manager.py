@@ -194,14 +194,19 @@ class DBManager(QObject):
             self.filter_updated.emit(None)
 
     def get_cached_stats(self, pos_hash):
+        """Devuelve (stats_df, engine_eval) de la RAM"""
         res = self.stats_cache.get((self.filter_id, int(pos_hash)))
-        if res is not None: logger.debug(f"DBManager: Cache HIT para posición {pos_hash}")
-        return res
+        if res is not None: 
+            logger.debug(f"DBManager: Cache HIT para posición {pos_hash}")
+            return res # Es una tupla (df, eval)
+        return None, None
 
-    def cache_stats(self, pos_hash, stats_df):
+    def cache_stats(self, pos_hash, stats_df, engine_eval):
+        """Guarda (stats_df, engine_eval) en la RAM"""
         key = (self.filter_id, int(pos_hash))
-        if len(self.stats_cache) >= self.MAX_CACHE_SIZE: self.stats_cache.pop(next(iter(self.stats_cache)))
-        self.stats_cache[key] = stats_df
+        if len(self.stats_cache) >= self.MAX_CACHE_SIZE: 
+            self.stats_cache.pop(next(iter(self.stats_cache)))
+        self.stats_cache[key] = (stats_df, engine_eval)
 
     def get_active_df(self):
         lazy = self.dbs.get(self.active_db_name)

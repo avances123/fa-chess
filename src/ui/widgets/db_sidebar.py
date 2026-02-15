@@ -79,10 +79,14 @@ class DBSidebar(QWidget):
         act.setToolTip(tip); act.setStatusTip(tip); act.triggered.connect(callback)
 
     def add_db_item(self, name, is_clipbase=False):
+        # Limpiar extensión si existe
+        display_name = name.replace(".parquet", "") if not is_clipbase else name
         icon = qta.icon('fa5s.clipboard', color='#2e7d32') if is_clipbase else qta.icon('fa5s.database')
-        item = QListWidgetItem(icon, name)
+        item = QListWidgetItem(icon, display_name)
+        # Guardar el nombre real (con extensión) en el UserRole para la lógica interna
+        item.setData(Qt.UserRole + 1, name)
         if not is_clipbase:
-            item.setToolTip("Doble clic para cambiar entre Solo Lectura y Escritura")
+            item.setToolTip(f"Base: {name}\nDoble clic para cambiar entre Solo Lectura y Escritura")
         self.list_widget.addItem(item)
         return item
 

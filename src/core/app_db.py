@@ -71,23 +71,39 @@ class AppDBManager:
         except: return {}
 
     # --- MÉTODOS PARA ÁRBOL DE APERTURA ---
-    def save_opening_stats(self, db_path, pos_hash, stats_df):
+    def save_opening_stats(self, db_path, pos_hash, stats_df, engine_eval=None):
         try:
             stats_json = stats_df.write_json()
             with self.get_connection() as conn:
-                conn.execute("INSERT OR REPLACE INTO opening_cache (db_path, pos_hash, stats_json) VALUES (?, ?, ?)",
-                             (db_path, str(pos_hash), stats_json))
+                conn.execute("""
+                    INSERT INTO opening_cache (db_path, pos_hash, stats_json, engine_eval) 
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(db_path, pos_hash) DO UPDATE SET 
+                        stats_json = excluded.stats_json,
+                        engine_eval = COALESCE(excluded.engine_eval, opening_cache.engine_eval)
+                """, (db_path, str(pos_hash), stats_json, engine_eval))
         except Exception as e:
             logger.error(f"AppDB: Error al guardar caché: {e}")
 
-    def get_opening_stats(self, db_path, pos_hash):
+    def update_opening_eval(self, db_path, pos_hash, engine_eval):
+        """Actualiza solo la evaluación del motor para una posición ya existente"""
         try:
             with self.get_connection() as conn:
-                cursor = conn.execute("SELECT stats_json FROM opening_cache WHERE db_path = ? AND pos_hash = ?", 
+                conn.execute("UPDATE opening_cache SET engine_eval = ? WHERE db_path = ? AND pos_hash = ?",
+                             (engine_eval, db_path, str(pos_hash)))
+        except Exception as e:
+            logger.error(f"AppDB: Error al actualizar eval: {e}")
+
+    def get_opening_stats(self, db_path, pos_hash):
+        """Devuelve (stats_df, engine_eval)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute("SELECT stats_json, engine_eval FROM opening_cache WHERE db_path = ? AND pos_hash = ?", 
                                      (db_path, str(pos_hash)))
                 row = cursor.fetchone()
                 if row:
-                    return pl.read_json(io.BytesIO(row[0].encode()))
+                    df = pl.read_json(io.BytesIO(row[0].encode()))
+                    return df, row[1]
         except Exception as e:
             logger.error(f"AppDB: Error al leer caché: {e}")
-        return None
+        return None, None
