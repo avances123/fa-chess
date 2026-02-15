@@ -263,7 +263,15 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_puzzles, "Ejercicios")
         
         self.progress = QProgressBar(); self.progress.setMaximumWidth(150); self.progress.setFixedHeight(14); self.progress.setTextVisible(True); self.progress.setVisible(False)
+        
+        self.btn_stop_op = QPushButton(qta.icon('fa5s.times-circle', color='#c62828'), "")
+        self.btn_stop_op.setFixedWidth(24); self.btn_stop_op.setFixedHeight(24)
+        self.btn_stop_op.setFlat(True); self.btn_stop_op.setVisible(False)
+        self.btn_stop_op.setToolTip("Cancelar operación actual")
+        self.btn_stop_op.clicked.connect(self.stop_current_operation)
+        
         self.statusBar().addPermanentWidget(self.progress)
+        self.statusBar().addPermanentWidget(self.btn_stop_op)
 
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
         pending = getattr(self, 'pending_dbs', [])
@@ -603,6 +611,10 @@ class MainWindow(QMainWindow):
         ))
         db_menu.addAction(self._create_action(
             "&Invertir Filtro", 'fa5s.exchange-alt', slot=self.trigger_invert_filter
+        ))
+        db_menu.addAction(self._create_action(
+            "&Calentar Caché Teórica...", 'fa5s.fire', slot=self.warm_up_opening_cache,
+            tip="Pre-generar estadísticas para todas las líneas con más de 200 partidas", color='#e65100'
         ))
         db_menu.addAction(self._create_action(
             "&Quitar Filtros", 'fa5s.eraser', "Ctrl+L", self.reset_filters, color='#c62828'
@@ -1448,6 +1460,52 @@ class MainWindow(QMainWindow):
         
         # 4. Otros ajustes
         self.app_db.set_config("perf_threshold", getattr(self, 'perf_threshold', 25))
+
+    def warm_up_opening_cache(self):
+        """Lanza el proceso de pre-generación de caché teórica proporcional al tamaño de la base"""
+        from src.core.workers import CachePopulatorWorker
+        
+        ref_name = self.opening_tree.combo_ref.currentText()
+        if ref_name == "Base Activa": ref_name = self.db.active_db_name
+        
+        # 1. Calcular umbral dinámico (0.5% del total, mínimo 10)
+        total_base = self.db.get_active_count() if ref_name == self.db.active_db_name else self.db.dbs[ref_name].select(pl.len()).collect().item()
+        dynamic_min = max(10, int(total_base * 0.005))
+        
+        msg = f"¿Quieres calentar la caché de '{ref_name}'?\n\n" \
+              f"Umbral calculado (0.5%): {dynamic_min} partidas.\n" \
+              "Límite: Jugada 15.\n\n" \
+              "Este proceso es equilibrado y cachea la teoría principal y secundarias fuertes."
+        
+        ret = QMessageBox.question(self, "Calentar Caché", msg, QMessageBox.Yes | QMessageBox.No)
+        if ret == QMessageBox.No: return
+
+        self.progress.setRange(0, 0)
+        self.progress.show()
+        self.btn_stop_op.setVisible(True)
+        self.statusBar().showMessage("Iniciando calentamiento dinámico...")
+        
+        self.warm_worker = CachePopulatorWorker(self.db, self.app_db, min_games=dynamic_min)
+        self.warm_worker.progress.connect(lambda n: self.statusBar().showMessage(f"Caché: {n} nuevas posiciones..."))
+        self.warm_worker.status.connect(self.statusBar().showMessage)
+        self.warm_worker.finished.connect(self.on_warm_up_finished)
+        self.warm_worker.start()
+
+    def stop_current_operation(self):
+        """Detiene la operación pesada actual"""
+        if hasattr(self, 'warm_worker') and self.warm_worker.isRunning():
+            self.warm_worker.stop()
+        if hasattr(self, 'append_worker') and self.append_worker.isRunning():
+            self.append_worker.terminate()
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            self.worker.terminate()
+        self.btn_stop_op.setVisible(False)
+
+    def on_warm_up_finished(self, count):
+        self.progress.hide()
+        self.btn_stop_op.setVisible(False)
+        QMessageBox.information(self, "Proceso Completado", f"Se han añadido {count} posiciones teóricas a la caché.")
+        self.update_stats()
 
     def load_config(self):
         self.def_light, self.def_dark = "#eeeed2", "#8ca2ad"

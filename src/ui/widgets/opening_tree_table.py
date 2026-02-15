@@ -151,8 +151,11 @@ class OpeningTreeTable(QWidget):
         is_white_turn = current_board.turn == chess.WHITE
         self.table.setRowCount(stats_df.height)
         for i, r in enumerate(stats_df.rows(named=True)):
-            # 1. Movimiento (Usar utilidad central para SAN)
-            move_text = uci_to_san(current_board, r["uci"])
+            # 1. Movimiento: Forzar siempre conversión de UCI a SAN para que sea legible
+            try:
+                move_text = uci_to_san(current_board, r["uci"])
+            except:
+                move_text = r["uci"] # Fallback a UCI si algo falla
 
             it_move = QTableWidgetItem(move_text)
             it_move.setData(Qt.UserRole, r["uci"]) # Guardamos UCI para la lógica interna

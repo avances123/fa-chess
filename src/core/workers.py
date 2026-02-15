@@ -356,3 +356,109 @@ class PGNExportWorker(QThread):
         except Exception as e: 
             self.status.emit(f"Error en exportación: {e}")
             self.finished.emit("")
+
+class CachePopulatorWorker(QThread):
+    progress = Signal(int) # posiciones cacheadas
+    status = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, db_manager, app_db, min_games=50000):
+        super().__init__()
+        self.db = db_manager
+        self.app_db = app_db
+        self.min_games = min_games
+        self.running = True
+
+    def run(self):
+        try:
+            ref_path = self.db.get_reference_path()
+            lazy_view = self.db.get_reference_view()
+            if not ref_path or lazy_view is None:
+                self.finished.emit(0)
+                return
+
+            from collections import deque
+            import chess.polyglot
+            
+            queue = deque([chess.Board()])
+            processed_hashes = set()
+            count = 0
+
+            self.status.emit("Analizando árbol teórico...")
+
+            while queue and self.running:
+                board = queue.popleft()
+                
+                # LÍMITE DE PROFUNDIDAD: Jugada 15 (30 medios movimientos)
+                if len(board.move_stack) >= 30: continue
+
+                pos_hash = chess.polyglot.zobrist_hash(board)
+                
+                if pos_hash in processed_hashes: continue
+                processed_hashes.add(pos_hash)
+
+                # 1. ¿Está ya en caché? (Con validación de formato nuevo)
+                stats = self.app_db.get_opening_stats(ref_path, pos_hash)
+                
+                if stats is not None and "uci" not in stats.columns:
+                    stats = None # Forzar recálculo de caché antigua
+
+                if stats is None:
+                    # 2. Calcular si no está
+                    stats = self._calculate_stats_sync(lazy_view, pos_hash)
+                    if stats is not None:
+                        self.app_db.save_opening_stats(ref_path, pos_hash, stats)
+                        count += 1
+                        if count % 10 == 0:
+                            self.progress.emit(count)
+                            self.status.emit(f"Cacheando: {count} posiciones nuevas...")
+
+                # 3. Decidir si profundizamos (si el movimiento tiene >= min_games)
+                # IMPORTANTE: Incluso si ya estaba en caché, debemos explorar sus hijos
+                if stats is not None and not stats.is_empty() and "uci" in stats.columns:
+                    for row in stats.rows(named=True):
+                        # Solo profundizamos si el movimiento tiene volumen suficiente
+                        if "c" in row and row["c"] >= self.min_games:
+                            nb = board.copy()
+                            try:
+                                nb.push_uci(row["uci"])
+                                h = chess.polyglot.zobrist_hash(nb)
+                                if h not in processed_hashes:
+                                    queue.append(nb)
+                            except: pass
+                
+                # Check de parada frecuente
+                if count > 5000: break # Seguridad para no llenar el disco infinitamente
+            
+            self.finished.emit(count)
+        except Exception as e:
+            self.status.emit(f"Error: {e}")
+            self.finished.emit(count)
+
+    def _calculate_stats_sync(self, lazy_view, pos_hash):
+        target = int(pos_hash)
+        q = (
+            lazy_view
+            .filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64)))
+            .with_columns([
+                pl.col("full_line").str.split(" ").alias("_m"),
+                pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")
+            ])
+            .filter(pl.col("_i") < pl.col("_m").list.len())
+            .with_columns(pl.col("_m").list.get(pl.col("_i")).alias("uci"))
+            .filter((pl.col("uci").str.len_chars() >= 4) & (pl.col("uci").str.len_chars() <= 5))
+            .group_by("uci")
+            .agg([
+                pl.len().alias("c"),
+                (pl.col("result") == "1-0").sum().alias("w"),
+                (pl.col("result") == "1/2-1/2").sum().alias("d"),
+                (pl.col("result") == "0-1").sum().alias("b"),
+                pl.col("w_elo").mean().fill_null(0).alias("avg_w_elo"),
+                pl.col("b_elo").mean().fill_null(0).alias("avg_b_elo")
+            ])
+        )
+        try: return q.collect(streaming=True)
+        except: return None
+
+    def stop(self):
+        self.running = False
