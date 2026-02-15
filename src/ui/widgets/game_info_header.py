@@ -20,19 +20,13 @@ class GameInfoHeader(QWidget):
         layout.addWidget(self.label)
 
     def update_info(self, game_data):
-        """
-        Actualiza el panel con los datos de la partida.
-        game_data: dict con 'white', 'black', 'w_elo', 'b_elo', 'result', 'event', 'date', 'site'
-        """
         if not game_data:
             self.clear_info()
             return
 
-        # Preparar link si existe
         site = game_data.get('site', '')
         site_html = f" • <a href='{site}' style='color: #1976d2; text-decoration: none;'>{site}</a>" if site.startswith("http") else f" • {site}" if site else ""
 
-        # Construir HTML
         header_html = f"""
             <div style='font-size: 14px;'>
                 ⚪ <b>{game_data['white']}</b> ({game_data['w_elo']}) vs ⚫ <b>{game_data['black']}</b> ({game_data['b_elo']})
@@ -43,6 +37,10 @@ class GameInfoHeader(QWidget):
             </div>
         """
         self.label.setText(header_html)
+
+    def update_material(self, board):
+        """Método dummy para evitar errores tras la restauración"""
+        pass
 
     def clear_info(self):
         self.label.setText("<i>Nueva partida (sin datos)</i>")

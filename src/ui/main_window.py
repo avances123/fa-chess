@@ -243,6 +243,11 @@ class MainWindow(QMainWindow):
     def update_ui(self):
         if hasattr(self, 'opening_tree'): self.opening_tree.clear_selection()
         self.board_ana.update_board(); self.update_stats()
+        
+        # Actualizar material en la cabecera
+        if hasattr(self, 'game_header'):
+            self.game_header.update_material(self.game.board)
+
         l = len(self.game.full_mainline)
         if len(self.game_evals) != l + 1: self.game_evals = [None] * (l + 1)
         self.eval_graph.set_evaluations(self.game_evals); self.eval_graph.set_current_move(self.game.current_idx)
@@ -256,9 +261,15 @@ class MainWindow(QMainWindow):
         self.hist_ana.setHtml(html)
 
     def run_stats_worker(self):
+        # 1. Limpieza de seguridad de workers antiguos
+        if not hasattr(self, '_stats_thread_pool'): self._stats_thread_pool = []
+        self._stats_thread_pool = [w for w in self._stats_thread_pool if w.isRunning()]
+        
         current_hash = chess.polyglot.zobrist_hash(self.game.board)
-        # PARADA INTELIGENTE
-        if self.game.board.fen() != chess.STARTING_FEN:
+        
+        # --- ALGORITMO DE PARADA INTELIGENTE POR VOLUMEN ---
+        is_starting_pos = self.game.board.fen() == chess.STARTING_FEN
+        if not is_starting_pos:
             parent = self.game.board.copy()
             if parent.move_stack:
                 parent.pop(); p_hash = chess.polyglot.zobrist_hash(parent); ref_path = self.db.get_reference_path()
@@ -274,9 +285,19 @@ class MainWindow(QMainWindow):
         if cached_res is not None and "uci" in cached_res.columns:
             self.on_stats_finished(cached_res, cached_eval); return
 
+        # 2. Detener el worker actual si existe antes de crear uno nuevo
+        if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
+            try:
+                self.stats_worker.finished.disconnect()
+                self.stats_worker.progress.disconnect()
+                self._stats_thread_pool.append(self.stats_worker) # Dejar que termine en el pool
+            except: pass
+
         self.opening_tree.set_loading(True); self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show()
         self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash, app_db=self.app_db)
-        self.stats_worker.progress.connect(self.progress.setValue); self.stats_worker.finished.connect(self.on_stats_finished); self.stats_worker.start()
+        self.stats_worker.progress.connect(self.progress.setValue)
+        self.stats_worker.finished.connect(self.on_stats_finished)
+        self.stats_worker.start()
 
     def update_stats(self): self.stats_timer.start(50)
 
@@ -488,7 +509,24 @@ class MainWindow(QMainWindow):
                 if btn: btn.hide(); self.tabs.tabBar().setTabButton(i, side, None)
     def close_tab(self, i):
         if i > 2: self.tabs.removeTab(i)
-    def show_about_dialog(self): QMessageBox.about(self, "fa-chess", "Clon de Scid vs PC ultrarápido con Polars.")
+    def show_about_dialog(self):
+        about_text = """
+        <h3>fa-chess</h3>
+        <p><b>Versión:</b> 1.0.0</p>
+        <p><b>Autor:</b> Fabio Rueda</p>
+        <p><b>GitHub:</b> <a href='https://github.com/avances123/fa-chess' style='color: #1976d2;'>github.com/avances123/fa-chess</a></p>
+        <hr>
+        <p>Un clon moderno y ligero de Scid vs. PC enfocado en el rendimiento masivo.</p>
+        <p><b>Tecnologías clave:</b>
+        <ul>
+            <li>Python & PySide6 (Qt)</li>
+            <li>Polars 1.x (Motor de datos ultra-rápido)</li>
+            <li>Python-Chess (Lógica de juego)</li>
+        </ul>
+        </p>
+        <p>© 2026 Fabio Rueda</p>
+        """
+        QMessageBox.about(self, "Acerca de fa-chess", about_text)
     def import_pgn(self):
         p, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "", "Chess PGN (*.pgn)")
         if p: self.progress.show(); self.worker = PGNWorker(p); self.worker.finished.connect(self.load_parquet); self.worker.start()
