@@ -96,4 +96,7 @@ class DBSidebar(QWidget):
         self.label_stats.setStyleSheet(styles.get(state, STYLE_BADGE_NORMAL))
 
     def _on_row_changed(self, row):
-        if row >= 0: self.db_switched.emit(self.list_widget.item(row).text())
+        if row >= 0:
+            item = self.list_widget.item(row)
+            real_name = item.data(Qt.UserRole + 1) or item.text()
+            self.db_switched.emit(real_name)
