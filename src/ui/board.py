@@ -33,6 +33,7 @@ class ChessBoard(QGraphicsView):
         self.engine_move = None
         self.hover_move = None
         self.highlighted_square = None 
+        self.tension_squares = [] # Lista de cuadros a resaltar en naranja
         self.show_last_move = True
         
         self.square_size = 100
@@ -167,12 +168,21 @@ class ChessBoard(QGraphicsView):
         if self.highlighted_square is not None:
             from PySide6.QtGui import QPen
             c, r = self.get_square_coords(self.highlighted_square)
-            # Dibujar un marco azul brillante alrededor de la casilla
             pen = QPen(QColor(0, 191, 255), 4) # DeepSkyBlue
             rect = self.scene.addRect(c * self.square_size + 2, r * self.square_size + 2,
                                      self.square_size - 4, self.square_size - 4,
                                      pen, QBrush(Qt.NoBrush))
-            rect.setZValue(50) # Por encima de las casillas pero debajo de flechas
+            rect.setZValue(50)
+
+        # Resaltado de Tensiones (Naranja)
+        for sq in self.tension_squares:
+            from PySide6.QtGui import QPen
+            c, r = self.get_square_coords(sq)
+            pen = QPen(QColor(255, 165, 0, 180), 3) # Orange
+            rect = self.scene.addRect(c * self.square_size + 4, r * self.square_size + 4,
+                                     self.square_size - 8, self.square_size - 8,
+                                     pen, QBrush(Qt.NoBrush))
+            rect.setZValue(40)
 
     def draw_move_arrow(self, uci, color):
         if not uci: return
