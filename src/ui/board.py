@@ -162,6 +162,17 @@ class ChessBoard(QGraphicsView):
         # 4. Dibujar Flechas
         self.draw_move_arrow(self.engine_move, QColor(0, 120, 255, 100))
         self.draw_move_arrow(self.hover_move, QColor(255, 0, 0, 60))
+        
+        # 5. Resaltado especial (Pistas / Posición)
+        if self.highlighted_square is not None:
+            from PySide6.QtGui import QPen
+            c, r = self.get_square_coords(self.highlighted_square)
+            # Dibujar un marco azul brillante alrededor de la casilla
+            pen = QPen(QColor(0, 191, 255), 4) # DeepSkyBlue
+            rect = self.scene.addRect(c * self.square_size + 2, r * self.square_size + 2,
+                                     self.square_size - 4, self.square_size - 4,
+                                     pen, QBrush(Qt.NoBrush))
+            rect.setZValue(50) # Por encima de las casillas pero debajo de flechas
 
     def draw_move_arrow(self, uci, color):
         if not uci: return

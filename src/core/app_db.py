@@ -70,6 +70,14 @@ class AppDBManager:
                 return {row[0]: row[1] for row in cursor.fetchall()}
         except: return {}
 
+    def get_tactical_elo(self):
+        """Recupera el Elo táctico guardado o 1200 por defecto"""
+        return self.get_config("tactical_elo", 1200)
+
+    def set_tactical_elo(self, elo):
+        """Guarda el nuevo Elo táctico"""
+        self.set_config("tactical_elo", elo)
+
     # --- MÉTODOS PARA ÁRBOL DE APERTURA ---
     def save_opening_stats(self, db_path, pos_hash, stats_df, engine_eval=None):
         try:

@@ -23,7 +23,6 @@ class PuzzleManager:
             words = theme.split()
             for word in words:
                 if len(word) > 1:
-                    # Usamos (?i) al principio del patrón para ignorar mayúsculas en Polars
                     q = q.filter(pl.col("Themes").str.contains(f"(?i){word}"))
         
         # Ordenación por ELO ascendente por defecto
