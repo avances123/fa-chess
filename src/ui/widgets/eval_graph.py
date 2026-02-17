@@ -159,3 +159,14 @@ class EvaluationGraph(QWidget):
     def leaveEvent(self, event):
         self.hover_idx = -1
         self.update()
+
+    def mouseMoveEvent(self, event):
+        idx = self._get_move_index_at_pos(event.pos())
+        if idx != self.hover_idx:
+            self.hover_idx = idx
+            self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            idx = self._get_move_index_at_pos(event.pos())
+            self.move_selected.emit(idx)

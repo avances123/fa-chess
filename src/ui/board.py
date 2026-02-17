@@ -90,12 +90,14 @@ class ChessBoard(QGraphicsView):
                 for item in self.piece_items:
                     if isValid(item) and (item.pos() - target_pos).manhattanLength() < 5:
                         self.drag_item = item; self.drag_item.setZValue(100); self.piece_drag_started.emit(); break
+            event.accept()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self.drag_item and isValid(self.drag_item):
             pos = self.mapToScene(event.position().toPoint())
             self.drag_item.setPos(pos - QPointF(self.square_size/2, self.square_size/2))
+            event.accept()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -111,6 +113,7 @@ class ChessBoard(QGraphicsView):
                     else: self.board.push(move)
                     self.piece_moved.emit(move.uci())
             self.selected_square = None; self.drag_item = None; self.update_board()
+            event.accept()
         super().mouseReleaseEvent(event)
 
     def update_board(self):

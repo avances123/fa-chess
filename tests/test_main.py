@@ -1,9 +1,40 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from src.main import main
 import sys
+from PySide6.QtWidgets import QApplication
 
-def test_main_entry_point():
-    # Mockear QApplication y MainWindow para no lanzar la UI real
-    with patch('PySide6.QtWidgets.QApplication'), patch('src.ui.main_window.MainWindow'), patch('sys.exit'):
-        from src.main import main
-        main()
+def test_main_app_start(monkeypatch):
+
+    # Mockear MainWindow
+
+    class MockWin:
+
+        def __init__(self): pass
+
+        def show(self): pass
+
+
+
+    monkeypatch.setattr("src.main.MainWindow", MockWin)
+
+    
+
+    # Mockear QApplication para que no intente crear una real
+
+    class MockApp:
+
+        def __init__(self, argv): pass
+
+        def exec(self): return 0
+
+    
+
+    monkeypatch.setattr("src.main.QApplication", MockApp)
+
+
+
+    from src.main import main
+
+    main()
+
+

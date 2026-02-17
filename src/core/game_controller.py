@@ -23,7 +23,10 @@ class GameController(QObject):
         for uci in uci_string.split():
             if uci:
                 try:
-                    self.full_mainline.append(chess.Move.from_uci(uci))
+                    move = chess.Move.from_uci(uci)
+                    self.full_mainline.append(move)
+                    self.board.push(move)
+                    self.current_idx += 1
                 except: break
         self.game_loaded.emit()
         self.position_changed.emit()

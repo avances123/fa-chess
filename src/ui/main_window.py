@@ -18,7 +18,7 @@ from PySide6.QtGui import QAction, QFont, QShortcut, QKeySequence, QPainter, QCo
 import qtawesome as qta
 
 from src.config import CONFIG_FILE, LIGHT_STYLE, ECO_FILE, APP_DB_FILE, logger
-from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker, PGNAppendWorker, PuzzleGeneratorWorker
+from src.core.workers import PGNWorker, StatsWorker, PGNExportWorker, PGNAppendWorker, PuzzleGeneratorWorker, CachePopulatorWorker
 from src.core.eco import ECOManager
 from src.core.db_manager import DBManager
 from src.core.app_db import AppDBManager

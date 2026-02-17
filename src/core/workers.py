@@ -146,10 +146,12 @@ class PGNExportWorker(QThread):
     progress = Signal(int); finished = Signal(str); status = Signal(str)
     def __init__(self, df, output_path): super().__init__(); self.df = df; self.output_path = output_path
     def run(self):
-        total = len(self.df)
         try:
+            # Aceptar tanto LazyFrame como DataFrame
+            df = self.df.collect() if hasattr(self.df, "collect") else self.df
+            total = len(df)
             with open(self.output_path, "w", encoding="utf-8") as f:
-                for idx, row in enumerate(self.df.iter_rows(named=True)):
+                for idx, row in enumerate(df.rows(named=True)):
                     game = chess.pgn.Game(); game.headers["White"] = row["white"]; game.headers["Black"] = row["black"]; game.headers["Result"] = row["result"]; game.headers["Date"] = row["date"]; game.headers["Event"] = row["event"]; game.headers["WhiteElo"] = str(row["w_elo"]); game.headers["BlackElo"] = str(row["b_elo"])
                     game_board = chess.Board(); node = game
                     for uci in row["full_line"].split():
@@ -158,7 +160,9 @@ class PGNExportWorker(QThread):
                     f.write(str(game) + "\n\n")
                     if idx % 100 == 0: self.progress.emit(int((idx / total) * 100))
             self.finished.emit(self.output_path)
-        except: self.finished.emit("")
+        except Exception as e:
+            print(f"Error en PGNExportWorker: {e}")
+            self.finished.emit("")
 
 class CachePopulatorWorker(QThread):
     progress = Signal(int); status = Signal(str); finished = Signal(int)
