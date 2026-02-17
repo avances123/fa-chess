@@ -229,9 +229,20 @@ class DBManager(QObject):
         if lazy_df is None: return None
         p_df = lazy_df.filter((pl.col("white") == player_name) | (pl.col("black") == player_name)).collect()
         if p_df.is_empty(): return None
+        
+        # Generar nombres de apertura para el reporte
         if eco_manager:
             opening_data = [eco_manager.get_opening_name(line) for line in p_df["full_line"]]
-            p_df = p_df.with_columns([pl.Series("opening_name", [d[0] for d in opening_data]), pl.Series("theory_depth", [d[1] for d in opening_data])])
+            p_df = p_df.with_columns([
+                pl.Series("opening_name", [d[0] for d in opening_data]), 
+                pl.Series("theory_depth", [d[1] for d in opening_data])
+            ])
+        else:
+            # Fallback si no hay ECO manager: usar los primeros movimientos
+            p_df = p_df.with_columns([
+                pl.col("line").alias("opening_name"),
+                pl.lit(0).alias("theory_depth")
+            ])
         
         white_games = p_df.filter(pl.col("white") == player_name)
         black_games = p_df.filter(pl.col("black") == player_name)
