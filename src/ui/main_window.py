@@ -43,17 +43,51 @@ from src.core.engine_worker import EngineWorker, FullAnalysisWorker
 
 from src.core.config_service import ConfigService
 
+from src.core.opening_service import OpeningService
+
+from src.core.import_service import ImportService
+
+from src.core.analysis_service import AnalysisService
+
+
+
 class MainWindow(QMainWindow):
+
     def __init__(self):
+
         super().__init__()
+
         self.setWindowTitle("fa-chess")
+
         self.setStyleSheet(LIGHT_STYLE)
+
         
+
         self.config_service = ConfigService()
-        self.app_db = self.config_service.app_db # Para compatibilidad temporal
+
+        self.app_db = self.config_service.app_db
+
         self.db = DBManager()
+
         self.game = GameController()
-        self.eco = ECOManager(ECO_FILE)
+
+        self.opening_service = OpeningService(self.db, self.app_db)
+
+        self.import_service = ImportService(self.db)
+
+        self.analysis_service = AnalysisService()
+
+        
+
+        # Parámetros iniciales para los servicios
+
+        engine_path = self.config_service.get("engine_path")
+
+        self.opening_service.set_engine_params(engine_path, self.config_service.get("tree_depth"))
+
+        self.analysis_service.set_engine_params(engine_path, self.config_service.get("engine_depth"))
+
+
         
         self.sort_col = None
         self.sort_desc = False
@@ -62,23 +96,38 @@ class MainWindow(QMainWindow):
         self.db_batch_size = 100
         self.db_loaded_count = 0
         self.current_db_df = None
-        self.last_pos_count = 1000000 
-        
-        self.game.position_changed.connect(self.update_ui)
-        self.db.active_db_changed.connect(self.refresh_db_list)
-        self.db.active_db_changed.connect(self.update_stats)
-        self.db.active_db_changed.connect(self.refresh_reference_combo)
-        self.db.filter_updated.connect(self.refresh_db_list)
-        self.db.filter_updated.connect(self.update_stats)
-        
-        self.stats_timer = QTimer()
-        self.stats_timer.setSingleShot(True)
-        self.stats_timer.timeout.connect(self.run_stats_worker)
         
         self.apply_config() 
         self.init_ui()
         self.init_menu()
         self.init_shortcuts()
+
+        # Conexiones de lógica (después de init_ui para que existan los widgets)
+        self.game.position_changed.connect(self.update_ui)
+        self.game.position_changed.connect(lambda: self.opening_service.request_stats(self.game.board))
+        
+        self.opening_service.stats_ready.connect(self.on_opening_stats_ready)
+        self.opening_service.tree_eval_ready.connect(lambda uci, score: self.opening_tree.update_branch_evals({uci: score}, self.game.board.turn == chess.WHITE))
+        self.opening_service.progress_updated.connect(self.progress.setValue)
+        
+        # Conexiones de Importación
+        self.import_service.import_started.connect(lambda msg: (self.progress.show(), self.statusBar().showMessage(msg)))
+        self.import_service.import_progress.connect(self.progress.setValue)
+        self.import_service.import_finished.connect(self.on_import_finished)
+        self.import_service.database_ready.connect(self.on_new_database_ready)
+        
+        # Conexiones de Análisis Completo
+        self.analysis_service.analysis_started.connect(lambda total: (self.progress.setRange(0, total), self.progress.show(), self.statusBar().showMessage("Analizando partida...")))
+        self.analysis_service.progress_updated.connect(lambda cur, tot: self.progress.setValue(cur))
+        self.analysis_service.move_analysed.connect(self.on_full_analysis_move_ready)
+        self.analysis_service.analysis_finished.connect(self.on_full_analysis_finished)
+        self.analysis_service.analysis_error.connect(lambda msg: (self.progress.hide(), QMessageBox.critical(self, "Error", msg)))
+        
+        self.db.active_db_changed.connect(self.refresh_db_list)
+        self.db.active_db_changed.connect(lambda: self.opening_service.request_stats(self.game.board))
+        self.db.active_db_changed.connect(self.refresh_reference_combo)
+        self.db.filter_updated.connect(self.refresh_db_list)
+        self.db.filter_updated.connect(lambda: self.opening_service.request_stats(self.game.board))
         
         # CARGA INICIAL
         pending_dbs = self.config_service.get("open_dbs")
@@ -192,21 +241,40 @@ class MainWindow(QMainWindow):
         self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera"}
 
     def start_full_analysis(self):
-        if self.action_engine.isChecked(): self.action_engine.toggle(); self.toggle_engine(False)
-        self.board_ana.setEnabled(False); self.opening_tree.setEnabled(False)
-        self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show()
-        total_moves = len(self.game.full_mainline) + 1; self.game_evals = [0] * total_moves; self.eval_graph.set_evaluations(self.game_evals)
-        self.analysis_worker = FullAnalysisWorker(self.game.full_mainline, depth=self.engine_depth, engine_path=self.engine_path)
-        self.analysis_worker.progress.connect(lambda curr, total: self.progress.setValue(int((curr/total)*100)))
-        self.analysis_worker.analysis_result.connect(self.on_analysis_update); self.analysis_worker.finished.connect(self.on_analysis_finished); self.analysis_worker.start()
+        if self.analysis_service.is_running():
+            self.analysis_service.stop_analysis()
+            return
+            
+        moves = [m.uci() for m in self.game.full_mainline]
+        if not moves: return
+        
+        # Desactivar UI temporalmente para evitar conflictos
+        self.board_ana.setEnabled(False)
+        self.opening_tree.setEnabled(False)
+        
+        self.game_evals = [0] * (len(moves) + 1)
+        self.eval_graph.set_evaluations(self.game_evals)
+        self.analysis_service.start_full_analysis(moves)
 
-    def on_analysis_update(self, idx, cp_score):
-        if 0 <= idx < len(self.game_evals): self.game_evals[idx] = cp_score; self.eval_graph.set_evaluations(self.game_evals)
+    def on_full_analysis_move_ready(self, idx, cp_score):
+        if 0 <= idx < len(self.game_evals):
+            self.game_evals[idx] = cp_score
+            self.eval_graph.set_evaluations(self.game_evals)
 
-    def on_analysis_finished(self):
-        self.progress.hide(); self.board_ana.setEnabled(True); self.opening_tree.setEnabled(True)
-        w_name = getattr(self, 'current_white', "Blancas"); b_name = getattr(self, 'current_black', "Negras")
-        self.analysis_report.update_stats(self.game_evals, [m.uci() for m in self.game.full_mainline], w_name, b_name)
+    def on_full_analysis_finished(self):
+        self.progress.hide()
+        self.board_ana.setEnabled(True)
+        self.opening_tree.setEnabled(True)
+        self.statusBar().showMessage("Análisis completado", 3000)
+        
+        w_name = self.game.metadata.get("White", "Blancas")
+        b_name = self.game.metadata.get("Black", "Negras")
+        
+        # El widget de reporte ahora se llama analysis_report (según el código previo)
+        if hasattr(self, 'analysis_report'):
+            self.analysis_report.update_stats(self.game_evals, [m.uci() for m in self.game.full_mainline], w_name, b_name)
+        
+        self.tabs.setCurrentIndex(2)
 
     def toggle_engine(self, checked):
         self.eval_bar.setVisible(checked)
@@ -252,7 +320,7 @@ class MainWindow(QMainWindow):
 
     def update_ui(self):
         if hasattr(self, 'opening_tree'): self.opening_tree.clear_selection()
-        self.board_ana.update_board(); self.update_stats()
+        self.board_ana.update_board()
         
         # Actualizar material en la cabecera
         if hasattr(self, 'game_header'):
@@ -270,68 +338,18 @@ class MainWindow(QMainWindow):
             html += f"<a {st} href='{i+1}'>{san}</a> "; temp.push(m)
         self.hist_ana.setHtml(html)
 
-    def run_stats_worker(self):
-        # 1. Limpieza de seguridad de workers antiguos
-        if not hasattr(self, '_stats_thread_pool'): self._stats_thread_pool = []
-        self._stats_thread_pool = [w for w in self._stats_thread_pool if w.isRunning()]
+    def on_opening_stats_ready(self, stats_df, opening_name, current_eval):
+        """Callback cuando el servicio de aperturas tiene datos nuevos."""
+        self.progress.hide()
         
-        current_hash = chess.polyglot.zobrist_hash(self.game.board)
-        
-        # --- ALGORITMO DE PARADA INTELIGENTE POR VOLUMEN ---
-        is_starting_pos = self.game.board.fen() == chess.STARTING_FEN
-        if not is_starting_pos:
-            parent = self.game.board.copy()
-            if parent.move_stack:
-                parent.pop(); p_hash = chess.polyglot.zobrist_hash(parent); ref_path = self.db.get_reference_path()
-                p_stats, _ = self.db.get_cached_stats(p_hash)
-                if p_stats is None and ref_path: p_stats, _ = self.app_db.get_opening_stats(ref_path, p_hash)
-                if p_stats is not None and not p_stats.is_empty() and "c" in p_stats.columns:
-                    if p_stats["c"].sum() <= 10:
-                        self.opening_tree.update_tree(None, self.game.board, "")
-                        self.db.cache_stats(current_hash, pl.DataFrame(schema={"uci": pl.String, "c": pl.UInt32}), None)
-                        return
-
-        cached_res, cached_eval = self.db.get_cached_stats(current_hash)
-        if cached_res is not None and "uci" in cached_res.columns:
-            self.on_stats_finished(cached_res, cached_eval); return
-
-        # 2. Detener el worker actual si existe antes de crear uno nuevo
-        if hasattr(self, 'stats_worker') and self.stats_worker.isRunning():
-            try:
-                self.stats_worker.finished.disconnect()
-                self.stats_worker.progress.disconnect()
-                self._stats_thread_pool.append(self.stats_worker) # Dejar que termine en el pool
-            except: pass
-
-        self.opening_tree.set_loading(True); self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.show()
-        self.stats_worker = StatsWorker(self.db, self.game.current_line_uci, self.game.board.turn == chess.WHITE, current_hash, app_db=self.app_db)
-        self.stats_worker.progress.connect(self.progress.setValue)
-        self.stats_worker.finished.connect(self.on_stats_finished)
-        self.stats_worker.start()
-
-    def update_stats(self): self.stats_timer.start(50)
-
-    def on_stats_finished(self, res, engine_eval):
-        self.progress.hide(); opening_name, _ = self.eco.get_opening_name(self.game.current_line_uci)
+        # Obtener el siguiente movimiento de la línea actual para resaltarlo
         next_move = self.game.full_mainline[self.game.current_idx].uci() if self.game.current_idx < len(self.game.full_mainline) else None
         
-        branch_evals = {}
-        if res is not None and not res.is_empty() and "c" in res.columns:
-            self.last_pos_count = res["c"].sum()
-            ref_path = self.db.get_reference_path()
-            if ref_path:
-                for move_uci in res["uci"]:
-                    try:
-                        temp_b = self.game.board.copy(); temp_b.push_uci(move_uci); h = chess.polyglot.zobrist_hash(temp_b)
-                        _, score = self.app_db.get_opening_stats(ref_path, h)
-                        if score is not None: branch_evals[move_uci] = score
-                    except: continue
-            self.opening_tree.update_tree(res, self.game.board, opening_name, total_view_count=self.last_pos_count, next_move_uci=next_move, engine_eval=engine_eval)
-            if branch_evals: self.opening_tree.update_branch_evals(branch_evals, self.game.board.turn == chess.WHITE)
-            if res is not None and not res.is_empty(): self.start_tree_scanner(res["uci"].to_list())
-        else:
-            self.last_pos_count = 0
-            self.opening_tree.update_tree(res, self.game.board, opening_name, engine_eval=engine_eval)
+        self.opening_tree.update_tree(stats_df, self.game.board, opening_name, next_move_uci=next_move, engine_eval=current_eval)
+        
+        # Delegar el análisis de variantes al servicio si el motor está encendido
+        if self.action_engine.isChecked() and stats_df is not None and not stats_df.is_empty():
+            self.opening_service.start_tree_analysis(stats_df["uci"].to_list())
 
     def start_tree_scanner(self, moves_uci):
         if hasattr(self, 'tree_scanner') and self.tree_scanner.isRunning():
@@ -349,6 +367,8 @@ class MainWindow(QMainWindow):
     def on_tree_scan_result(self, uci, score_str):
         if not hasattr(self, 'opening_tree') or self.opening_tree.isHidden(): return
         self.opening_tree.update_branch_evals({uci: score_str}, self.game.board.turn == chess.WHITE)
+        
+        # Persistir la evaluación en la base de datos de la app para no re-calcularla
         try:
             num_score = (10.0 if not score_str.startswith("-") else -10.0) if "M" in score_str else float(score_str)
             ref_path = self.db.get_reference_path()
@@ -360,7 +380,8 @@ class MainWindow(QMainWindow):
     def change_reference_db(self, display_name):
         idx = self.opening_tree.combo_ref.currentIndex()
         real_name = self.opening_tree.combo_ref.itemData(idx) or display_name
-        if self.db.set_reference_db(real_name): self.last_pos_count = 1000000; self.update_stats()
+        if self.db.set_reference_db(real_name): 
+            self.opening_service.request_stats(self.game.board)
 
     def refresh_reference_combo(self):
         if not hasattr(self, 'opening_tree'): return
@@ -597,9 +618,32 @@ class MainWindow(QMainWindow):
         """
         QMessageBox.about(self, "Acerca de fa-chess", about_text)
     def import_pgn(self):
-        p, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "", "Chess PGN (*.pgn)")
-        if p: self.progress.show(); self.worker = PGNWorker(p); self.worker.finished.connect(self.load_parquet); self.worker.start()
-    def append_pgn_to_current_db(self): pass
+        pgn_path, _ = QFileDialog.getOpenFileName(self, "Importar PGN", "", "Chess PGN (*.pgn)")
+        if not pgn_path: return
+        parquet_path, _ = QFileDialog.getSaveFileName(self, "Nueva Base Parquet", "", "Chess Parquet (*.parquet)")
+        if not parquet_path: return
+        self.import_service.import_new_db(pgn_path, parquet_path)
+
+    def append_pgn_to_current_db(self):
+        if not self.db.active_db_name:
+            self.statusBar().showMessage("No hay base activa para añadir partidas", 3000)
+            return
+        pgn_path, _ = QFileDialog.getOpenFileName(self, "Añadir PGN a base actual", "", "Chess PGN (*.pgn)")
+        if pgn_path:
+            self.import_service.append_to_db(pgn_path, self.db.active_db_name)
+
+    def on_import_finished(self, success, message):
+        self.progress.hide()
+        self.statusBar().showMessage(message, 5000)
+        if not success:
+            QMessageBox.critical(self, "Error de Importación", message)
+
+    def on_new_database_ready(self, path):
+        name = os.path.basename(path)
+        it = self.db_sidebar.add_db_item(name)
+        self.db_sidebar.list_widget.setCurrentItem(it)
+        self.save_config()
+
     def sort_database(self, idx):
         col = self.col_mapping.get(idx)
         if col: self.sort_desc = not self.sort_desc; self.db.sort_active_db(col, self.sort_desc)

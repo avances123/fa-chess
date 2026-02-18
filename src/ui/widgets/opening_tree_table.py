@@ -109,7 +109,7 @@ class OpeningTreeTable(QWidget):
         self.set_loading(False)
         self.total_view_count = total_view_count
         self.branch_evals_cache = {} # RESETEAR MEMORIA AL CAMBIAR DE POSICIÓN
-        self.label_eco.setText(f"{opening_name} ({engine_eval:+.2f})" if engine_eval is not None else opening_name)
+        self.label_eco.setText(f"{opening_name} ({engine_eval})" if engine_eval else opening_name)
         self.table.setSortingEnabled(False); self.table.setRowCount(0)
         
         if stats_df is None or stats_df.is_empty():
