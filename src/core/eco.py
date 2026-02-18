@@ -5,6 +5,7 @@ import re
 class ECOManager:
     def __init__(self, eco_path):
         self.eco_db = {} # FEN_key -> name
+        self.openings = []
         if os.path.exists(eco_path):
             self.load_eco(eco_path)
 
@@ -14,11 +15,13 @@ class ECOManager:
         return " ".join(parts[:4]) # rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -
 
     def load_eco(self, path):
+        self.openings = [] # Para compatibilidad con tests antiguos
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("[") or '"' not in line: continue
+                    self.openings.append(line)
                     
                     # Formato: A00 "Nombre" 1. e4
                     match = re.search(r'^(\S+)\s+"([^"]+)"\s+(.+)$', line)
@@ -48,8 +51,15 @@ class ECOManager:
 
     def get_opening_name(self, board):
         """Busca el nombre de la apertura basándose en el estado actual del tablero."""
-        temp_board = board.copy()
+        if isinstance(board, str):
+            temp_board = chess.Board()
+            for move in board.split():
+                try: temp_board.push_uci(move)
+                except: break
+        else:
+            temp_board = board.copy()
         
+        orig_stack_len = len(temp_board.move_stack)
         while True:
             key = self._get_fen_key(temp_board)
             if key in self.eco_db:
@@ -58,4 +68,4 @@ class ECOManager:
             if len(temp_board.move_stack) == 0: break
             temp_board.pop()
             
-        return "Posición Inicial" if len(board.move_stack) == 0 else "Variante Desconocida", 0
+        return "Posición Inicial" if orig_stack_len == 0 else "Variante Desconocida", 0

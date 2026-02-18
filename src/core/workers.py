@@ -11,13 +11,14 @@ class PGNWorker(QThread):
     finished = Signal(str)
     status = Signal(str)
 
-    def __init__(self, path):
+    def __init__(self, path, output_path=None):
         super().__init__()
         self.path = path
+        self.output_path = output_path
 
     def run(self):
         try:
-            out = self.path.replace(".pgn", ".parquet")
+            out = self.output_path if self.output_path else self.path.replace(".pgn", ".parquet")
             convert_pgn_to_parquet(self.path, out, progress_callback=self.progress.emit)
             self.finished.emit(out)
         except Exception as e:
@@ -53,7 +54,7 @@ class PGNAppendWorker(QThread):
             new_lf = new_lf.with_columns(pl.col("id") + max_id + 1)
 
             final_tmp = self.target_path + ".tmp"
-            pl.concat([old_lf, new_lf]).collect(streaming=True).write_parquet(final_tmp)
+            pl.concat([old_lf, new_lf]).collect(engine="streaming").write_parquet(final_tmp)
 
             if os.path.exists(self.target_path): os.remove(self.target_path)
             os.rename(final_tmp, self.target_path)
@@ -109,7 +110,7 @@ class StatsWorker(QThread):
     progress = Signal(int)
 
     def __init__(self, db, current_line_uci, is_white_turn, current_hash=None, app_db=None, min_games=0):
-        super().__init__(); self.db = db; self.app_db = app_db; self.current_line = current_line_uci; self.current_hash = current_hash; self.is_white = is_white_turn; self.min_games = min_games
+        super().__init__(); self.db = db; self.app_db = app_db; self.current_line = current_line_uci; self.current_hash = current_hash; self.is_white = is_white_turn; self.min_games = min_games; self.running = True
 
     def run(self):
         try:
@@ -124,13 +125,13 @@ class StatsWorker(QThread):
             if lazy_view is None: self.finished.emit(None, None); return
             target = int(self.current_hash); total_count = lazy_view.select(pl.len()).collect().item()
             if total_count < 200000:
-                stats = self._build_stats_query(lazy_view, target).collect(streaming=True); self.progress.emit(100)
+                stats = self._build_stats_query(lazy_view, target).collect(engine="streaming"); self.progress.emit(100)
             else:
                 num_chunks = 10; chunk_size = total_count // num_chunks; all_chunks = []
                 for i in range(num_chunks):
                     if self.isInterruptionRequested(): return
                     chunk_lazy = lazy_view.slice(i * chunk_size, chunk_size if i < num_chunks - 1 else total_count - (i * chunk_size))
-                    all_chunks.append(self._build_stats_query(chunk_lazy, target).collect(streaming=True)); self.progress.emit(int(((i + 1) / num_chunks) * 100))
+                    all_chunks.append(self._build_stats_query(chunk_lazy, target).collect(engine="streaming")); self.progress.emit(int(((i + 1) / num_chunks) * 100))
                 combined = pl.concat(all_chunks)
                 stats = combined.group_by("uci").agg([pl.col("c").sum(), pl.col("w").sum(), pl.col("d").sum(), pl.col("b").sum(), ((pl.col("avg_w_elo") * pl.col("c")).sum() / pl.col("c").sum()).alias("avg_w_elo"), ((pl.col("avg_b_elo") * pl.col("c")).sum() / pl.col("c").sum()).alias("avg_b_elo")]).sort("c", descending=True)
             stats = stats.with_columns(pl.lit(False).alias("_is_partial"))
@@ -141,6 +142,9 @@ class StatsWorker(QThread):
 
     def _build_stats_query(self, lazy_df, target):
         return (lazy_df.filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64))).with_columns([pl.col("full_line").str.split(" ").alias("_m"), pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")]).filter(pl.col("_i") < pl.col("_m").list.len()).with_columns(pl.col("_m").list.get(pl.col("_i")).alias("uci")).filter((pl.col("uci").str.len_chars() >= 4) & (pl.col("uci").str.len_chars() <= 5)).group_by("uci").agg([pl.len().alias("c"), (pl.col("result") == "1-0").sum().alias("w"), (pl.col("result") == "1/2-1/2").sum().alias("d"), (pl.col("result") == "0-1").sum().alias("b"), pl.col("w_elo").mean().fill_null(0).alias("avg_w_elo"), pl.col("b_elo").mean().fill_null(0).alias("avg_b_elo")]))
+
+    def stop(self):
+        self.running = False
 
 class PGNExportWorker(QThread):
     progress = Signal(int); finished = Signal(str); status = Signal(str)
@@ -197,7 +201,7 @@ class CachePopulatorWorker(QThread):
     def _calculate_stats_sync(self, lazy_view, pos_hash):
         target = int(pos_hash)
         q = (lazy_view.filter(pl.col("fens").list.contains(pl.lit(target, dtype=pl.UInt64))).with_columns([pl.col("full_line").str.split(" ").alias("_m"), pl.col("fens").list.eval(pl.element() == target).list.arg_max().alias("_i")]).filter(pl.col("_i") < pl.col("_m").list.len()).with_columns(pl.col("_m").list.get(pl.col("_i")).alias("uci")).filter((pl.col("uci").str.len_chars() >= 4) & (pl.col("uci").str.len_chars() <= 5)).group_by("uci").agg([pl.len().alias("c"), (pl.col("result") == "1-0").sum().alias("w"), (pl.col("result") == "1/2-1/2").sum().alias("d"), (pl.col("result") == "0-1").sum().alias("b"), pl.col("w_elo").mean().fill_null(0).alias("avg_w_elo"), pl.col("b_elo").mean().fill_null(0).alias("avg_b_elo")]))
-        try: return q.collect(streaming=True)
+        try: return q.collect(engine="streaming")
         except: return None
     def stop(self): self.running = False
 

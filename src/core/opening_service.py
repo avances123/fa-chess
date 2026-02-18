@@ -26,6 +26,9 @@ class OpeningService(QObject):
     stats_ready = Signal(pl.DataFrame, str, object) 
     tree_eval_ready = Signal(str, str) 
     progress_updated = Signal(int)
+    tree_progress = Signal(int, int) # (actual, total)
+    tree_finished = Signal()
+    status_message = Signal(str)
 
     def __init__(self, db_manager, app_db=None):
         super().__init__()
@@ -66,6 +69,7 @@ class OpeningService(QObject):
             try: self.stats_worker.disconnect()
             except: pass
 
+        self.status_message.emit("Calculando estadísticas de base de datos...")
         self.stats_worker = StatsWorker(
             self.db, self.last_request["line_uci"], self.last_request["is_white"],
             current_hash=self.last_request["hash"], app_db=self.app_db
@@ -77,6 +81,23 @@ class OpeningService(QObject):
         self.stats_worker.start()
 
     def _on_stats_worker_finished(self, df, current_eval, opening_name):
+        # Si no hay datos en la BD, inyectamos movimientos legales para que el árbol no esté vacío
+        # y el TreeScanner pueda empezar a trabajar.
+        if (df is None or df.is_empty()) and self.last_request:
+            board = self.last_request["board_copy"]
+            # Tomamos hasta 15 movimientos legales (prioriza capturas y jaques por orden de python-chess)
+            legal_moves = [m.uci() for m in board.legal_moves][:15]
+            if legal_moves:
+                df = pl.DataFrame({
+                    "uci": legal_moves,
+                    "c": [0] * len(legal_moves),
+                    "w": [0] * len(legal_moves),
+                    "d": [0] * len(legal_moves),
+                    "b": [0] * len(legal_moves),
+                    "avg_w_elo": [0] * len(legal_moves),
+                    "avg_b_elo": [0] * len(legal_moves)
+                })
+
         formatted_eval = format_chess_score(current_eval)
         self.stats_ready.emit(df, opening_name, formatted_eval)
 
@@ -87,10 +108,13 @@ class OpeningService(QObject):
             self.tree_worker.wait()
             
         from src.core.engine_worker import TreeScannerWorker
+        self.status_message.emit(f"Analizando árbol ({len(moves_uci)} jugadas)...")
         self.tree_worker = TreeScannerWorker(
             self.engine_path, self.last_request["fen"], moves_uci, depth=self.tree_depth
         )
         self.tree_worker.eval_ready.connect(self.tree_eval_ready.emit)
+        self.tree_worker.progress.connect(self.tree_progress.emit)
+        self.tree_worker.finished.connect(self.tree_finished.emit)
         self.tree_worker.start()
 
     @property

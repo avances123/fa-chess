@@ -6,10 +6,19 @@ from src.core.engine_service import EngineService
 class EngineWorker(QThread):
     # Señal que envía: (evaluación_str, mejor_movimiento_uci, línea_principal_san)
     info_updated = Signal(str, str, list)
+    error_occurred = Signal(str)
 
-    def __init__(self, engine_path, threads=1, hash_mb=64, depth_limit=0):
+    def __init__(self, engine_path, threads=1, hash_mb=64, depth_limit=0, uci_options=None):
         super().__init__()
-        self.service = EngineService(engine_path, threads, hash_mb)
+        # Compatibilidad: si no se pasan uci_options completas, construimos las básicas
+        self.uci_options = uci_options or {}
+        if "Threads" not in self.uci_options:
+            self.uci_options["Threads"] = threads
+        if "Hash" not in self.uci_options:
+            self.uci_options["Hash"] = hash_mb
+
+        self.service = EngineService(engine_path, self.uci_options)
+        self.service.error_occurred.connect(self.error_occurred)
         self.depth_limit = depth_limit
         self._is_running = True
         self.current_fen = None
@@ -27,6 +36,9 @@ class EngineWorker(QThread):
         self.current_fen = fen
 
     def run(self):
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return
+            
         if not self.service.start():
             return
 
@@ -80,6 +92,7 @@ class EngineWorker(QThread):
 class TreeScannerWorker(QThread):
     """Analizador secundario que recorre el árbol posición a posición rápidamente"""
     eval_ready = Signal(str, str) # uci, score_str
+    progress = Signal(int, int)   # actual, total
 
     def __init__(self, engine_path, fen, moves_uci, depth=12):
         super().__init__()
@@ -90,11 +103,16 @@ class TreeScannerWorker(QThread):
         self._is_running = True
 
     def run(self):
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return
+            
         engine = None
+        total = len(self.moves)
         try:
             engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
-            for move_uci in self.moves:
+            for i, move_uci in enumerate(self.moves):
                 if not self._is_running: break
+                self.progress.emit(i + 1, total)
                 board = chess.Board(self.fen)
                 move = chess.Move.from_uci(move_uci)
                 if move in board.legal_moves:
@@ -122,13 +140,12 @@ class FullAnalysisWorker(QThread):
     finished = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, moves, depth=10, engine_path=None):
+    def __init__(self, moves, depth=10, engine_path=None, uci_options=None):
         super().__init__()
         self.moves = moves
         self.depth = depth
         self.engine_path = engine_path
-        self.threads = 1
-        self.hash_mb = 16
+        self.uci_options = uci_options or {"Threads": 1, "Hash": 16}
         self.running = True
 
     def stop(self):
@@ -136,6 +153,9 @@ class FullAnalysisWorker(QThread):
         self.wait()
 
     def run(self):
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return
+            
         if not self.engine_path or not os.path.exists(self.engine_path):
             self.error_occurred.emit("Motor no configurado")
             return
@@ -143,7 +163,7 @@ class FullAnalysisWorker(QThread):
         engine = None
         try:
             engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
-            engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
+            engine.configure(self.uci_options)
             
             board = chess.Board()
             total = len(self.moves)

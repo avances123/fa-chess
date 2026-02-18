@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
                              QLabel, QColorDialog, QTabWidget, QWidget, 
-                             QLineEdit, QSpinBox, QDoubleSpinBox, QFileDialog, QFormLayout)
+                             QSpinBox, QDoubleSpinBox, QFormLayout)
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtCore import Qt
 import qtawesome as qta
@@ -9,10 +9,11 @@ import os
 class SettingsDialog(QDialog):
     def __init__(self, current_config, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Configuración de fa-chess")
-        self.resize(480, 400)
+        self.setWindowTitle("Preferencias de fa-chess")
+        self.resize(400, 350)
         
-        self.config = current_config
+        # Copia local de la config para editar colores
+        self.config = current_config.copy()
         
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -23,13 +24,13 @@ class SettingsDialog(QDialog):
         
         self.btn_light = QPushButton()
         self.btn_light.setFixedWidth(60)
-        self.update_button_color(self.btn_light, self.config.get("color_light", "#eeeed2"))
+        self.update_button_color(self.btn_light, self.config.get("colors", {}).get("light", "#eeeed2"))
         self.btn_light.clicked.connect(self.pick_light)
         app_layout.addRow("Color Casillas Claras:", self.btn_light)
         
         self.btn_dark = QPushButton()
         self.btn_dark.setFixedWidth(60)
-        self.update_button_color(self.btn_dark, self.config.get("color_dark", "#8ca2ad"))
+        self.update_button_color(self.btn_dark, self.config.get("colors", {}).get("dark", "#8ca2ad"))
         self.btn_dark.clicked.connect(self.pick_dark)
         app_layout.addRow("Color Casillas Oscuras:", self.btn_dark)
         
@@ -44,45 +45,6 @@ class SettingsDialog(QDialog):
         
         self.tabs.addTab(tab_appearance, qta.icon("fa5s.palette"), "Apariencia")
         
-        # --- PESTAÑA MOTOR ---
-        tab_engine = QWidget()
-        eng_layout = QFormLayout(tab_engine)
-        
-        path_layout = QHBoxLayout()
-        self.edit_engine_path = QLineEdit(self.config.get("engine_path", "/usr/bin/stockfish"))
-        btn_browse = QPushButton(qta.icon("fa5s.folder-open"), "")
-        btn_browse.clicked.connect(self.browse_engine)
-        path_layout.addWidget(self.edit_engine_path)
-        path_layout.addWidget(btn_browse)
-        eng_layout.addRow("Ruta Stockfish:", path_layout)
-        
-        self.spin_threads = QSpinBox()
-        self.spin_threads.setRange(1, 128)
-        self.spin_threads.setValue(self.config.get("engine_threads", 1))
-        eng_layout.addRow("Hilos (Threads):", self.spin_threads)
-        
-        self.spin_hash = QSpinBox()
-        self.spin_hash.setRange(16, 65536)
-        self.spin_hash.setSingleStep(16)
-        self.spin_hash.setValue(self.config.get("engine_hash", 64))
-        self.spin_hash.setSuffix(" MB")
-        eng_layout.addRow("Memoria Hash:", self.spin_hash)
-        
-        self.spin_depth = QSpinBox()
-        self.spin_depth.setRange(0, 50)
-        self.spin_depth.setValue(self.config.get("engine_depth", 10))
-        self.spin_depth.setSpecialValueText("Infinito")
-        self.spin_depth.setToolTip("Límite para el motor principal y análisis de partida. 0 = No para nunca.")
-        eng_layout.addRow("Profundidad Motor (0=Inf):", self.spin_depth)
-        
-        self.spin_tree_depth = QSpinBox()
-        self.spin_tree_depth.setRange(1, 30)
-        self.spin_tree_depth.setValue(self.config.get("tree_depth", 12))
-        self.spin_tree_depth.setToolTip("Profundidad fija para rellenar las filas del árbol. Mantén este valor bajo para velocidad.")
-        eng_layout.addRow("Profundidad del Árbol:", self.spin_tree_depth)
-        
-        self.tabs.addTab(tab_engine, qta.icon("fa5s.microchip"), "Motor")
-
         # --- PESTAÑA VENENO 🧪 ---
         tab_venom = QWidget()
         ven_layout = QFormLayout(tab_venom)
@@ -134,32 +96,28 @@ class SettingsDialog(QDialog):
         button.setStyleSheet(f"background-color: {color}; border: 1px solid #999;")
 
     def pick_light(self):
-        c = QColorDialog.getColor(QColor(self.config["color_light"]), self, "Elegir Color Claro")
+        # Manejo seguro de diccionarios anidados
+        current = self.config.get("colors", {}).get("light", "#eeeed2")
+        c = QColorDialog.getColor(QColor(current), self, "Elegir Color Claro")
         if c.isValid():
-            self.config["color_light"] = c.name()
-            self.update_button_color(self.btn_light, self.config["color_light"])
+            if "colors" not in self.config: self.config["colors"] = {}
+            self.config["colors"]["light"] = c.name()
+            self.update_button_color(self.btn_light, c.name())
 
     def pick_dark(self):
-        c = QColorDialog.getColor(QColor(self.config["color_dark"]), self, "Elegir Color Oscuro")
+        current = self.config.get("colors", {}).get("dark", "#8ca2ad")
+        c = QColorDialog.getColor(QColor(current), self, "Elegir Color Oscuro")
         if c.isValid():
-            self.config["color_dark"] = c.name()
-            self.update_button_color(self.btn_dark, self.config["color_dark"])
-
-    def browse_engine(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Seleccionar Stockfish", "/usr/bin", "Ejecutables (*)")
-        if path:
-            self.edit_engine_path.setText(path)
+            if "colors" not in self.config: self.config["colors"] = {}
+            self.config["colors"]["dark"] = c.name()
+            self.update_button_color(self.btn_dark, c.name())
 
     def get_config(self):
+        # Devolvemos solo lo que gestiona este diálogo
+        # Nota: MainWindow es responsable de hacer el merge con save_bulk
         return {
-            "color_light": self.config["color_light"],
-            "color_dark": self.config["color_dark"],
+            "colors": self.config.get("colors", {"light": "#eeeed2", "dark": "#8ca2ad"}),
             "perf_threshold": self.spin_perf.value(),
-            "engine_path": self.edit_engine_path.text(),
-            "engine_threads": self.spin_threads.value(),
-            "engine_hash": self.spin_hash.value(),
-            "engine_depth": self.spin_depth.value(),
-            "tree_depth": self.spin_tree_depth.value(),
             "venom_eval": self.spin_v_eval.value(),
             "venom_win": self.spin_v_win.value(),
             "practical_win": self.spin_p_win.value()

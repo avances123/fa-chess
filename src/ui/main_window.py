@@ -27,6 +27,7 @@ from src.ui.board import ChessBoard
 from src.ui.settings_dialog import SettingsDialog
 from src.ui.search_dialog import SearchDialog
 from src.ui.edit_game_dialog import EditGameDialog
+from src.ui.engine_manager import EngineManagerDialog
 from src.ui.player_report_widget import PlayerReportWidget
 from src.ui.widgets.results_bar import ResultsWidget
 from src.ui.widgets.eval_graph import EvaluationGraph
@@ -279,8 +280,39 @@ class MainWindow(QMainWindow):
     def toggle_engine(self, checked):
         self.eval_bar.setVisible(checked)
         if checked:
-            self.engine_worker = EngineWorker(engine_path=self.engine_path, threads=self.engine_threads, hash_mb=self.engine_hash, depth_limit=self.engine_depth)
-            self.engine_worker.info_updated.connect(self.on_engine_update); self.engine_worker.update_position(self.game.board.fen()); self.engine_worker.start()
+            engine_conf = self.config_service.get_active_engine_config()
+            
+            # Fallback a legacy si no hay motor activo definido
+            if not engine_conf:
+                # Intento de usar configuración antigua
+                path = self.config_service.get("engine_path")
+                if path and os.path.exists(path):
+                    engine_conf = {
+                        "path": path,
+                        "options": {
+                            "Threads": self.config_service.get("engine_threads"),
+                            "Hash": self.config_service.get("engine_hash")
+                        }
+                    }
+            
+            if not engine_conf:
+                QMessageBox.warning(self, "Motor no configurado", "No hay un motor configurado. Vaya a Herramientas -> Gestionar Motores.")
+                self.action_engine.setChecked(False)
+                self.eval_bar.setVisible(False)
+                return
+                
+            path = engine_conf.get("path")
+            opts = engine_conf.get("options", {})
+            
+            self.engine_worker = EngineWorker(engine_path=path, uci_options=opts, depth_limit=self.engine_depth)
+            self.engine_worker.info_updated.connect(self.on_engine_update)
+            self.engine_worker.error_occurred.connect(lambda err: (
+                QMessageBox.critical(self, "Error de Motor", f"El motor falló: {err}"),
+                self.action_engine.setChecked(False),
+                self.toggle_engine(False)
+            ))
+            self.engine_worker.update_position(self.game.board.fen())
+            self.engine_worker.start()
         else:
             if hasattr(self, 'engine_worker'): self.engine_worker.stop(); self.engine_worker.wait()
             self.label_eval.setText(""); self.board_ana.set_engine_move(None)
@@ -400,13 +432,22 @@ class MainWindow(QMainWindow):
         if is_checkable: action.setCheckable(True)
         return action
 
+    def open_engine_manager(self):
+        dialog = EngineManagerDialog(self.config_service, self)
+        if dialog.exec_():
+            self.apply_config() # Recargar límites globales (depth, tree_depth)
+            
+            if self.action_engine.isChecked():
+                self.toggle_engine(False)
+                self.toggle_engine(True)
+
     def init_menu(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("&Archivo")
         file_menu.addAction(self._create_action("Nueva Base...", 'fa5s.plus-circle', "Ctrl+N", self.create_new_db))
         file_menu.addAction(self._create_action("Abrir Base...", 'fa5s.folder-open', "Ctrl+O", self.open_parquet_file))
         self.save_action = self._create_action("Guardar Base Activa", 'fa5s.save', "Ctrl+S", self.save_to_active_db)
-        file_menu.addAction(self.save_action); file_menu.addSeparator(); file_menu.addAction(self._create_action("Configuración...", 'fa5s.cog', slot=self.open_settings))
+        file_menu.addAction(self.save_action); file_menu.addSeparator(); file_menu.addAction(self._create_action("Preferencias...", 'fa5s.cog', slot=self.open_settings))
         
         db_menu = menubar.addMenu("&Base de Datos")
         import_menu = db_menu.addMenu(qta.icon('fa5s.file-import'), "&Importar")
@@ -415,6 +456,9 @@ class MainWindow(QMainWindow):
         db_menu.addAction(self._create_action("Filtrar...", 'fa5s.search', "Ctrl+F", self.open_search))
         db_menu.addAction(self._create_action("Calentar Caché...", 'fa5s.fire', slot=self.warm_up_opening_cache, color='#e65100'))
         db_menu.addAction(self._create_action("Quitar Filtros", 'fa5s.eraser', "Ctrl+L", self.reset_filters, color='red'))
+        
+        tools_menu = menubar.addMenu("&Herramientas")
+        tools_menu.addAction(self._create_action("Gestionar Motores...", 'fa5s.microchip', slot=self.open_engine_manager))
         
         board_menu = menubar.addMenu("&Tablero")
         board_menu.addAction(self._create_action("Girar Tablero", 'fa5s.retweet', "F", self.flip_boards))

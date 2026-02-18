@@ -11,11 +11,17 @@ class EngineService(QObject):
     info_updated = Signal(dict) # d, score, cp, pv, nps, speed
     error_occurred = Signal(str)
 
-    def __init__(self, engine_path, threads=1, hash_mb=64):
+    def __init__(self, engine_path, uci_options=None):
         super().__init__()
         self.engine_path = engine_path
-        self.threads = threads
-        self.hash_mb = hash_mb
+        
+        # Filtrar opciones gestionadas por python-chess para evitar conflictos
+        raw_options = uci_options.copy() if uci_options else {}
+        self.multipv = raw_options.pop("MultiPV", 1) # Default 1 si no está
+        
+        # Opciones que python-chess gestiona internamente y no permite configurar manualmente
+        self.uci_options = {k: v for k, v in raw_options.items() if k not in ["Ponder", "UCI_Chess960"]}
+        
         self.engine = None
         self._is_active = False
         self._current_analysis = None
@@ -32,7 +38,9 @@ class EngineService(QObject):
         
         try:
             self.engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
-            self.engine.configure({"Threads": self.threads, "Hash": self.hash_mb})
+            if self.uci_options:
+                logger.info(f"EngineService: Configurando {self.uci_options}")
+                self.engine.configure(self.uci_options)
             self._is_active = True
             logger.info(f"EngineService: Motor iniciado ({self.engine_path})")
             return True
@@ -61,7 +69,9 @@ class EngineService(QObject):
             self._current_analysis.stop()
 
         try:
-            self._current_analysis = self.engine.analysis(board, limit)
+            # Pasamos multipv como argumento gestionado, si es mayor a 1
+            kwargs = {"multipv": self.multipv} if self.multipv > 1 else {}
+            self._current_analysis = self.engine.analysis(board, limit, **kwargs)
             # En un entorno real, procesaríamos el iterador en un hilo aparte
             # Para este servicio, expondremos una API que el Worker pueda usar.
             return self._current_analysis

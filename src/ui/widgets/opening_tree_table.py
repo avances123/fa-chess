@@ -120,7 +120,12 @@ class OpeningTreeTable(QWidget):
         self.table.setRowCount(stats_df.height)
         
         for i, r in enumerate(stats_df.rows(named=True)):
-            win_rate = ((r["w"] + 0.5 * r["d"]) / r["c"] if is_white_turn else (r["b"] + 0.5 * r["d"]) / r["c"]) * 100
+            total_games = r["c"]
+            if total_games > 0:
+                win_rate = ((r["w"] + 0.5 * r["d"]) / total_games if is_white_turn else (r["b"] + 0.5 * r["d"]) / total_games) * 100
+            else:
+                win_rate = 0.0
+
             is_played = r["uci"] == next_move_uci
             
             it_venom = QTableWidgetItem(""); it_venom.setTextAlignment(Qt.AlignCenter)
@@ -156,7 +161,10 @@ class OpeningTreeTable(QWidget):
             self.table.setItem(i, 6, it_elo)
 
             opp_elo = r["avg_b_elo"] if is_white_turn else r["avg_w_elo"]
-            perf = int(opp_elo + ((r["w"] + 0.5 * r["d"]) / r["c"] - 0.5 if is_white_turn else (r["b"] + 0.5 * r["d"]) / r["c"] - 0.5) * 800)
+            perf = 0
+            if total_games > 0:
+                perf = int(opp_elo + ((r["w"] + 0.5 * r["d"]) / total_games - 0.5 if is_white_turn else (r["b"] + 0.5 * r["d"]) / total_games - 0.5) * 800)
+            
             it_perf = SortableWidgetItem(str(perf)); it_perf.setData(Qt.UserRole, perf); it_perf.setTextAlignment(Qt.AlignCenter)
             if is_played: it_perf.setBackground(QColor("#f6f669"))
             if perf > av_elo + self.perf_threshold: it_perf.setForeground(QColor("#2e7d32"))

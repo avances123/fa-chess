@@ -125,6 +125,12 @@ class DBManager(QObject):
             self.active_db_changed.emit(name)
             self.filter_updated.emit(None)
 
+    def close(self):
+        """Libera recursos y detiene workers."""
+        self.dbs = {}
+        self.current_filter_df = None
+        self.stats_cache = {}
+
     def save_game(self, game: chess.pgn.Game):
         """Añade una partida a la base de datos activa."""
         if not self.active_db_name:
@@ -242,7 +248,7 @@ class DBManager(QObject):
             q = q.sort(col_name, descending=descending)
             if self.current_filter_query is not None: self.current_filter_query = q
             else: self.dbs[self.active_db_name] = q
-            self.current_filter_df = q.head(1000).collect(streaming=True)
+            self.current_filter_df = q.head(1000).collect(engine="streaming")
             self.filter_updated.emit(self.current_filter_df)
         except Exception as e:
             logger.error(f"DBManager: Error al ordenar: {e}")

@@ -28,7 +28,7 @@ class ImportService(QObject):
         # Conexiones
         self.worker.progress.connect(self.import_progress.emit)
         self.worker.finished.connect(lambda p: self._on_import_finished(p, True))
-        self.worker.error.connect(lambda e: self.import_finished.emit(False, e))
+        self.worker.status.connect(lambda e: self.import_finished.emit(False, e))
         
         self.worker.start()
         return True, "Importación iniciada"

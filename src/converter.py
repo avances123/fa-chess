@@ -158,7 +158,7 @@ def convert_pgn_to_parquet(pgn_path, output_path, max_games=100000000, chunk_siz
     if parquet_files:
         print(f"\nFusionando {len(parquet_files)} bloques en el archivo final...")
         # Polars puede leer múltiples parquets y unirlos sin cargar todo a la vez
-        pl.scan_parquet(os.path.join(temp_work_dir, "*.parquet")).collect(streaming=True).write_parquet(output_path)
+        pl.scan_parquet(os.path.join(temp_work_dir, "*.parquet")).collect(engine="streaming").write_parquet(output_path)
         
     # Limpieza
     shutil.rmtree(temp_work_dir)
@@ -190,7 +190,7 @@ def convert_lichess_puzzles(csv_path, output_path):
         ])
 
         logger.info("Conversor: Escribiendo archivo Parquet de alta velocidad (Streaming)...")
-        df.collect(streaming=True).write_parquet(output_path)
+        df.collect(engine="streaming").write_parquet(output_path)
         
         logger.info(f"Conversor: Éxito! {output_path} generado en {time.time() - start_time:.1f}s")
     except Exception as e:
