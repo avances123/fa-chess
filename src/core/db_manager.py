@@ -1,6 +1,10 @@
 import os
 import json
 import time
+import os
+import chess
+import chess.pgn
+import chess.polyglot
 import polars as pl
 from datetime import datetime
 from src.config import logger, GAME_SCHEMA
@@ -51,6 +55,27 @@ class DBManager(QObject):
             return True
         return False
 
+    def delete_db_from_disk(self, name):
+        """Elimina físicamente el archivo de la base de datos."""
+        if name not in self.db_metadata:
+            return False, "Base de datos no encontrada"
+        
+        path = self.db_metadata[name]["path"]
+        try:
+            if name in self.dbs:
+                del self.dbs[name]
+            if name in self.db_metadata:
+                del self.db_metadata[name]
+            
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info(f"DBManager: Archivo eliminado: {path}")
+                return True, "Archivo eliminado del disco"
+            return False, "El archivo no existe en la ruta especificada"
+        except Exception as e:
+            logger.error(f"DBManager: Error al borrar archivo {path}: {e}")
+            return False, str(e)
+
     def set_dirty(self, name, status=True):
         if name in self.db_metadata:
             self.db_metadata[name]["dirty"] = status
@@ -99,6 +124,66 @@ class DBManager(QObject):
             self.reset_to_full_base()
             self.active_db_changed.emit(name)
             self.filter_updated.emit(None)
+
+    def save_game(self, game: chess.pgn.Game):
+        """Añade una partida a la base de datos activa."""
+        if not self.active_db_name:
+            return False, "No hay base de datos activa"
+
+        try:
+            # 1. Extraer datos para el esquema
+            full_line = []
+            fens = []
+            board = game.board()
+            fens.append(chess.polyglot.zobrist_hash(board))
+            
+            node = game
+            while node.variations:
+                next_node = node.variation(0)
+                move = next_node.move
+                full_line.append(move.uci())
+                board.push(move)
+                fens.append(chess.polyglot.zobrist_hash(board))
+                node = next_node
+
+            new_data = {
+                "id": [int(time.time() * 1000)], # ID temporal basado en timestamp
+                "date": [game.headers.get("Date", "????.??.??")],
+                "event": [game.headers.get("Event", "?")],
+                "site": [game.headers.get("Site", "?")],
+                "white": [game.headers.get("White", "Unknown")],
+                "w_elo": [int(game.headers.get("WhiteElo", 0)) if game.headers.get("WhiteElo", "0").isdigit() else 0],
+                "black": [game.headers.get("Black", "Unknown")],
+                "b_elo": [int(game.headers.get("BlackElo", 0)) if game.headers.get("BlackElo", "0").isdigit() else 0],
+                "result": [game.headers.get("Result", "*")],
+                "line": [game.headers.get("ECO", "")], # Podríamos usar ECOManager aquí después
+                "full_line": [" ".join(full_line)],
+                "fens": [fens]
+            }
+
+            new_df = pl.DataFrame(new_data, schema=GAME_SCHEMA).lazy()
+            
+            # 2. Concatenar a la base actual
+            name = self.active_db_name
+            self.dbs[name] = pl.concat([self.dbs[name], new_df])
+            self.set_dirty(name, True)
+            
+            # 3. Notificar cambios
+            self.reset_to_full_base()
+            self.filter_updated.emit(None)
+            return True, "Partida guardada correctamente"
+        except Exception as e:
+            logger.error(f"DBManager: Error al guardar partida: {e}")
+            return False, str(e)
+
+    def filter_by_position(self, pos_hash):
+        """Filtra la base de datos por una posición específica."""
+        criteria = {
+            "white": "", "black": "", "min_elo": "", 
+            "result": "Cualquiera", "position_hash": pos_hash, 
+            "use_position": True
+        }
+        return self.filter_db(criteria)
 
     def get_reference_path(self):
         target = self.reference_db_name if self.reference_db_name else self.active_db_name

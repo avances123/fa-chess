@@ -41,13 +41,16 @@ from src.ui.styles import (STYLE_EVAL_BAR, STYLE_LABEL_EVAL, STYLE_TABLE_HEADER,
                        STYLE_BADGE_ERROR, STYLE_GAME_HEADER, STYLE_ACTION_BUTTON)
 from src.core.engine_worker import EngineWorker, FullAnalysisWorker
 
+from src.core.config_service import ConfigService
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("fa-chess")
         self.setStyleSheet(LIGHT_STYLE)
         
-        self.app_db = AppDBManager(APP_DB_FILE)
+        self.config_service = ConfigService()
+        self.app_db = self.config_service.app_db # Para compatibilidad temporal
         self.db = DBManager()
         self.game = GameController()
         self.eco = ECOManager(ECO_FILE)
@@ -72,19 +75,21 @@ class MainWindow(QMainWindow):
         self.stats_timer.setSingleShot(True)
         self.stats_timer.timeout.connect(self.run_stats_worker)
         
-        self.load_config() 
+        self.apply_config() 
         self.init_ui()
         self.init_menu()
         self.init_shortcuts()
         
         # CARGA INICIAL
-        for path in self.pending_dbs:
+        pending_dbs = self.config_service.get("open_dbs")
+        for path in pending_dbs:
             if path and os.path.exists(path):
                 self.load_parquet(path)
         
         # Restaurar Base Activa persistida
-        if hasattr(self, 'pending_active_db') and self.pending_active_db:
-            target = self.pending_active_db
+        active_db = self.config_service.get("active_db")
+        if active_db:
+            target = active_db
             for i in range(self.db_sidebar.list_widget.count()):
                 if self.db_sidebar.list_widget.item(i).data(Qt.UserRole + 1) == target:
                     self.db_sidebar.list_widget.setCurrentRow(i)
@@ -92,6 +97,11 @@ class MainWindow(QMainWindow):
                     break
         elif self.db_sidebar.list_widget.count() > 0:
             self.db_sidebar.list_widget.setCurrentRow(0)
+        
+        self.update_ui()
+        self.tabs.setCurrentIndex(1)
+        self._fix_tab_buttons()
+        self.statusBar().showMessage("Listo")
         
         self.update_ui()
         self.tabs.setCurrentIndex(1)
@@ -111,20 +121,20 @@ class MainWindow(QMainWindow):
     def flip_boards(self): self.board_ana.flip()
 
     def search_current_position(self):
-        pos_hash = chess.polyglot.zobrist_hash(self.game.board)
         if not self.db.active_db_name:
             self.statusBar().showMessage("No hay ninguna base de datos activa", 3000)
             return
         
+        pos_hash = chess.polyglot.zobrist_hash(self.game.board)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self.progress.setRange(0, 0); self.progress.show()
         self.statusBar().showMessage("Buscando posición...")
-        QApplication.processEvents()
+        
         try:
-            self.search_criteria = {"white": "", "black": "", "min_elo": "", "result": "Cualquiera", "position_hash": pos_hash, "use_position": True}
-            self.db.filter_db(self.search_criteria)
+            self.db.filter_by_position(pos_hash)
         finally:
             QApplication.restoreOverrideCursor()
+            self.progress.hide()
 
     def init_ui(self):
         self.tabs = QTabWidget(); self.tabs.setTabsClosable(True); self.tabs.tabCloseRequested.connect(self.close_tab)
@@ -410,40 +420,68 @@ class MainWindow(QMainWindow):
         if self.db.save_active_db(): self.statusBar().showMessage("Base guardada en disco", 3000)
 
     def add_current_game_to_db(self):
-        if not self.db.active_db_name: return
-        import chess.polyglot; b = chess.Board(); fens = [chess.polyglot.zobrist_hash(b)]
-        for m in self.game.full_mainline: b.push(m); fens.append(chess.polyglot.zobrist_hash(b))
-        data = {"id": int(time.time()*1000), "white": "Jugador", "black": "Oponente", "w_elo": 0, "b_elo": 0, "result": "*", "date": datetime.now().strftime("%Y.%m.%d"), "event": "Local", "site": "", "line": " ".join([m.uci() for m in self.game.full_mainline[:12]]), "full_line": self.game.current_line_uci, "fens": fens}
-        if self.db.add_game(self.db.active_db_name, data): self.refresh_db_list()
+        pgn = self.game.get_pgn_object()
+        success, msg = self.db.save_game(pgn)
+        if success:
+            self.refresh_db_list()
+            self.statusBar().showMessage(msg, 3000)
+        else:
+            self.statusBar().showMessage(f"Error: {msg}", 5000)
 
     def open_settings(self):
-        cfg = {"color_light": self.board_ana.color_light, "color_dark": self.board_ana.color_dark, "perf_threshold": self.perf_threshold, "engine_path": self.engine_path, "engine_threads": self.engine_threads, "engine_hash": self.engine_hash, "engine_depth": self.engine_depth, "tree_depth": self.tree_depth, "min_games": self.min_games, "venom_eval": self.venom_eval, "venom_win": self.venom_win, "practical_win": self.practical_win}
+        cfg = self.config_service.get_all()
+        # Añadir colores actuales por si se han cambiado en la sesión
+        cfg["color_light"] = self.board_ana.color_light
+        cfg["color_dark"] = self.board_ana.color_dark
+        
         dialog = SettingsDialog(cfg, self)
         if dialog.exec_():
-            n = dialog.get_config(); self.board_ana.color_light = n["color_light"]; self.board_ana.color_dark = n["color_dark"]; self.board_ana.update_board()
-            self.perf_threshold = n["perf_threshold"]; self.engine_path = n["engine_path"]; self.engine_threads = n["engine_threads"]; self.engine_hash = n["engine_hash"]; self.engine_depth = n["engine_depth"]; self.tree_depth = n["tree_depth"]
-            self.venom_eval = n["venom_eval"]; self.venom_win = n["venom_win"]; self.practical_win = n["practical_win"]
-            self.opening_tree.perf_threshold = self.perf_threshold; self.opening_tree.venom_eval = self.venom_eval; self.opening_tree.venom_win = self.venom_win; self.opening_tree.practical_win = self.practical_win
-            self.save_config()
-            if self.action_engine.isChecked(): self.toggle_engine(False); self.toggle_engine(True)
+            new_cfg = dialog.get_config()
+            self.config_service.save_bulk(new_cfg)
+            self.apply_config()
+            
+            # Actualizar UI inmediata
+            self.board_ana.color_light = self.def_light
+            self.board_ana.color_dark = self.def_dark
+            self.board_ana.update_board()
+            self.opening_tree.perf_threshold = self.perf_threshold
+            self.opening_tree.venom_eval = self.venom_eval
+            self.opening_tree.venom_win = self.venom_win
+            self.opening_tree.practical_win = self.practical_win
+            
+            if self.action_engine.isChecked(): 
+                self.toggle_engine(False)
+                self.toggle_engine(True)
 
-    def load_config(self):
-        self.def_light, self.def_dark = "#eeeed2", "#8ca2ad"
-        self.perf_threshold = self.app_db.get_config("perf_threshold", 25)
-        colors = self.app_db.get_config("colors")
-        if colors: self.def_light = colors.get("light", self.def_light); self.def_dark = colors.get("dark", self.def_dark)
-        self.engine_path = self.app_db.get_config("engine_path", "/usr/bin/stockfish")
-        self.engine_threads = self.app_db.get_config("engine_threads", 1); self.engine_hash = self.app_db.get_config("engine_hash", 64); self.engine_depth = self.app_db.get_config("engine_depth", 10); self.tree_depth = self.app_db.get_config("tree_depth", 12); self.min_games = self.app_db.get_config("min_games", 20)
-        self.venom_eval = self.app_db.get_config("venom_eval", 0.5); self.venom_win = self.app_db.get_config("venom_win", 52); self.practical_win = self.app_db.get_config("practical_win", 60)
-        self.pending_dbs = self.app_db.get_config("open_dbs", [])
-        self.pending_active_db = self.app_db.get_config("active_db", None)
+    def apply_config(self):
+        """Aplica la configuración del servicio a la instancia de MainWindow."""
+        cfg = self.config_service.get_all()
+        
+        # Colores
+        self.def_light = cfg["colors"]["light"]
+        self.def_dark = cfg["colors"]["dark"]
+        
+        # Motor
+        self.engine_path = cfg["engine_path"]
+        self.engine_threads = cfg["engine_threads"]
+        self.engine_hash = cfg["engine_hash"]
+        self.engine_depth = cfg["engine_depth"]
+        
+        # Árbol y Veneno
+        self.tree_depth = cfg["tree_depth"]
+        self.min_games = cfg["min_games"]
+        self.perf_threshold = cfg["perf_threshold"]
+        self.venom_eval = cfg["venom_eval"]
+        self.venom_win = cfg["venom_win"]
+        self.practical_win = cfg["practical_win"]
 
     def save_config(self):
+        """Guarda el estado actual de la app (Bases abiertas, etc.)"""
         dbs = [m["path"] for m in self.db.db_metadata.values() if m.get("path")]
-        self.app_db.set_config("open_dbs", dbs)
-        self.app_db.set_config("active_db", self.db.active_db_name)
-        self.app_db.set_config("colors", {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark})
-        self.app_db.set_config("engine_path", self.engine_path); self.app_db.set_config("engine_threads", self.engine_threads); self.app_db.set_config("engine_hash", self.engine_hash); self.app_db.set_config("engine_depth", self.engine_depth); self.app_db.set_config("tree_depth", self.tree_depth); self.app_db.set_config("min_games", self.min_games); self.app_db.set_config("venom_eval", self.venom_eval); self.app_db.set_config("venom_win", self.venom_win); self.app_db.set_config("practical_win", self.practical_win); self.app_db.set_config("perf_threshold", self.perf_threshold)
+        self.config_service.set("open_dbs", dbs)
+        self.config_service.set("active_db", self.db.active_db_name)
+        self.config_service.set("colors", {"light": self.board_ana.color_light, "dark": self.board_ana.color_dark})
+        # El resto de valores ya se guardan desde SettingsDialog
 
     def refresh_db_list(self):
         if not self.db.active_db_name: return
@@ -496,9 +534,40 @@ class MainWindow(QMainWindow):
         n = it.data(Qt.UserRole + 1); ro = not self.db.db_metadata[n]["read_only"]; self.db.set_readonly(n, ro); self.refresh_db_list()
     def on_db_list_context_menu(self, pos, it):
         if not it: return
-        m = QMenu(); n = it.data(Qt.UserRole + 1)
-        if not self.db.db_metadata[n]["read_only"]: m.addAction("Persistir Base", self.save_to_active_db)
-        m.addAction("Quitar de la lista", lambda: self.remove_database(it)).exec(self.db_sidebar.list_widget.mapToGlobal(pos))
+        n = it.data(Qt.UserRole + 1)
+        if n not in self.db.db_metadata: return
+        
+        m = QMenu()
+        if not self.db.db_metadata[n].get("read_only", True): 
+            m.addAction("Persistir Cambios", self.save_to_active_db)
+            
+        m.addAction("Quitar de la lista", lambda: self.remove_database(it))
+        
+        delete_action = m.addAction("BORRAR DE DISCO")
+        delete_action.setIcon(qta.icon('fa5s.trash', color='#d32f2f'))
+        delete_action.triggered.connect(lambda: self.delete_database_permanently(it))
+        
+        m.exec(self.db_sidebar.list_widget.mapToGlobal(pos))
+
+    def delete_database_permanently(self, it):
+        name = it.data(Qt.UserRole + 1)
+        reply = QMessageBox.question(
+            self, "Confirmar Borrado",
+            f"¿Estás SEGURO de que quieres borrar físicamente el archivo?\n\n{name}\n\nEsta acción no se puede deshacer.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            success, msg = self.db.delete_db_from_disk(name)
+            if success:
+                # Quitar de la lista visual y guardar config
+                row = self.db_sidebar.list_widget.row(it)
+                self.db_sidebar.list_widget.takeItem(row)
+                self.save_config()
+                self.refresh_db_list()
+                self.statusBar().showMessage(msg, 3000)
+            else:
+                QMessageBox.critical(self, "Error", f"No se pudo borrar: {msg}")
     def remove_database(self, it):
         n = it.data(Qt.UserRole + 1); del self.db.dbs[n]; del self.db.db_metadata[n]; self.db_sidebar.list_widget.takeItem(self.db_sidebar.list_widget.row(it)); self.save_config()
     def on_db_table_context_menu(self, pos): pass
