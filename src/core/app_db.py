@@ -115,3 +115,21 @@ class AppDBManager:
         except Exception as e:
             logger.error(f"AppDB: Error al leer caché: {e}")
         return None, None
+
+    def clear_opening_cache(self, db_path):
+        """Borra la caché de aperturas asociada a una base de datos específica"""
+        try:
+            with self.get_connection() as conn:
+                conn.execute("DELETE FROM opening_cache WHERE db_path = ?", (db_path,))
+                logger.info(f"AppDB: Caché invalidada para {db_path}")
+        except Exception as e:
+            logger.error(f"AppDB: Error al limpiar caché de {db_path}: {e}")
+
+    def clear_all_opening_cache(self):
+        """Borra toda la caché de aperturas"""
+        try:
+            with self.get_connection() as conn:
+                conn.execute("DELETE FROM opening_cache")
+                logger.info("AppDB: Caché de aperturas vaciada por completo")
+        except Exception as e:
+            logger.error(f"AppDB: Error al vaciar caché: {e}")

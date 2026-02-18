@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
 
         self.opening_service = OpeningService(self.db, self.app_db)
 
-        self.import_service = ImportService(self.db)
+        self.import_service = ImportService(self.db, self.app_db)
 
         self.analysis_service = AnalysisService()
 
@@ -468,7 +468,10 @@ class MainWindow(QMainWindow):
 
     def create_new_db(self):
         path, _ = QFileDialog.getSaveFileName(self, "Crear Nueva Base", "", "Chess Parquet (*.parquet)")
-        if path: self.db.create_new_database(path); self.load_parquet(path)
+        if path:
+            if not path.endswith(".parquet"):
+                path += ".parquet"
+            self.db.create_new_database(path); self.load_parquet(path)
 
     def open_parquet_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Abrir Parquet", "", "Chess Parquet (*.parquet)")
@@ -666,6 +669,8 @@ class MainWindow(QMainWindow):
         if not pgn_path: return
         parquet_path, _ = QFileDialog.getSaveFileName(self, "Nueva Base Parquet", "", "Chess Parquet (*.parquet)")
         if not parquet_path: return
+        if not parquet_path.endswith(".parquet"):
+            parquet_path += ".parquet"
         self.import_service.import_new_db(pgn_path, parquet_path)
 
     def append_pgn_to_current_db(self):

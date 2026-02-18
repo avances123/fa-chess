@@ -12,9 +12,10 @@ class ImportService(QObject):
     import_finished = Signal(bool, str) # success, message
     database_ready = Signal(str) # path de la nueva base
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, app_db=None):
         super().__init__()
         self.db = db_manager
+        self.app_db = app_db
         self.worker = None
 
     def import_new_db(self, pgn_path, parquet_path):
@@ -48,7 +49,7 @@ class ImportService(QObject):
         
         # Conexiones
         self.worker.progress.connect(self.import_progress.emit)
-        self.worker.finished.connect(lambda p: self._on_import_finished(p, False))
+        self.worker.finished.connect(lambda: self._on_import_finished("OK", False))
         
         self.worker.start()
         return True, "Anexado iniciado"
@@ -61,10 +62,15 @@ class ImportService(QObject):
         if is_new:
             # Si es nueva, la cargamos en el manager
             name = self.db.load_parquet(path)
+            if self.app_db: self.app_db.clear_opening_cache(path)
             self.database_ready.emit(path)
             self.import_finished.emit(True, f"Nueva base '{name}' creada con éxito")
         else:
-            # Si es un append, recargamos la base para ver los cambios
+            # Si es un append, recuperamos el path real de la base activa
             name = self.db.active_db_name
+            if name in self.db.db_metadata and self.app_db:
+                full_path = self.db.db_metadata[name]["path"]
+                self.app_db.clear_opening_cache(full_path)
+                
             self.db.reload_db(name)
             self.import_finished.emit(True, f"Partidas añadidas a '{name}'")
