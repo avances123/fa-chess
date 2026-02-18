@@ -347,8 +347,8 @@ class MainWindow(QMainWindow):
         
         self.opening_tree.update_tree(stats_df, self.game.board, opening_name, next_move_uci=next_move, engine_eval=current_eval)
         
-        # Delegar el análisis de variantes al servicio si el motor está encendido
-        if self.action_engine.isChecked() and stats_df is not None and not stats_df.is_empty():
+        # El escaneo del árbol ahora es automático si hay jugadas
+        if stats_df is not None and not stats_df.is_empty():
             self.opening_service.start_tree_analysis(stats_df["uci"].to_list())
 
     def start_tree_scanner(self, moves_uci):
